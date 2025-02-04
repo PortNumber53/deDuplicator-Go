@@ -115,6 +115,11 @@ func main() {
 		cmdErr = files.FindDuplicates(database, files.ListOptions{
 			Host:     *listHost,
 			AllHosts: *listAllHosts,
+			Colors: files.ColorOptions{
+				HeaderColor: "\033[33m", // Yellow
+				FileColor:   "\033[90m", // Dark gray
+				ResetColor:  "\033[0m",  // Reset
+			},
 		})
 	case "prune":
 		pruneCmd.Parse(os.Args[2:])

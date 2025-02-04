@@ -144,10 +144,18 @@ func UpdateHashes(db *sql.DB, force bool, count int) error {
 	return rows.Err()
 }
 
+// ColorOptions defines ANSI color codes for output formatting
+type ColorOptions struct {
+	HeaderColor string
+	FileColor   string
+	ResetColor  string
+}
+
 // ListOptions defines the options for listing duplicate files
 type ListOptions struct {
 	Host     string // Specific host to check for duplicates
 	AllHosts bool   // Whether to check across all hosts
+	Colors   ColorOptions
 }
 
 func FindDuplicates(db *sql.DB, opts ListOptions) error {
@@ -172,7 +180,7 @@ func FindDuplicates(db *sql.DB, opts ListOptions) error {
 	// Build the query based on options
 	query := `
 		WITH duplicates AS (
-			SELECT hash, COUNT(*) as count
+			SELECT hash, size
 			FROM files
 			WHERE hash IS NOT NULL`
 
@@ -181,24 +189,19 @@ func FindDuplicates(db *sql.DB, opts ListOptions) error {
 	}
 
 	query += `
-			GROUP BY hash
+			GROUP BY hash, size
 			HAVING COUNT(*) > 1
 		)
-		SELECT d.hash, string_agg(
-			f.path || ' [' || f.host || '] (hashed at: ' || f.last_hashed_at || ')',
-			',' ORDER BY f.last_hashed_at DESC
-		) as paths
-		FROM duplicates d
-		JOIN files f ON f.hash = d.hash`
+		SELECT f.hash, f.size, f.path, f.host, f.last_hashed_at
+		FROM files f
+		JOIN duplicates d ON f.hash = d.hash
+		WHERE f.hash IS NOT NULL`
 
 	if !opts.AllHosts {
-		query += ` WHERE f.host = $1`
+		query += ` AND f.host = $1`
 	}
 
-	query += `
-		GROUP BY d.hash
-		ORDER BY MAX(f.last_hashed_at) DESC
-	`
+	query += ` ORDER BY f.last_hashed_at DESC`
 
 	var rows *sql.Rows
 	if !opts.AllHosts {
@@ -211,26 +214,62 @@ func FindDuplicates(db *sql.DB, opts ListOptions) error {
 	}
 	defer rows.Close()
 
-	var duplicatesFound int
+	// Use a map to group files by hash
+	type fileInfo struct {
+		path         string
+		host         string
+		lastHashedAt time.Time
+	}
+	duplicateGroups := make(map[string]struct {
+		size  int64
+		files []fileInfo
+	})
+
 	for rows.Next() {
 		var hash string
-		var pathsStr string
-		if err := rows.Scan(&hash, &pathsStr); err != nil {
+		var size sql.NullInt64
+		var path, host string
+		var lastHashedAt time.Time
+		if err := rows.Scan(&hash, &size, &path, &host, &lastHashedAt); err != nil {
 			return err
 		}
 
-		paths := strings.Split(pathsStr, ",")
-		fmt.Printf("\nDuplicate files (hash: %s):\n", hash)
-		for _, path := range paths {
-			fmt.Printf("  %s\n", path)
+		group := duplicateGroups[hash]
+		if size.Valid {
+			group.size = size.Int64
 		}
-		duplicatesFound++
+		group.files = append(group.files, fileInfo{
+			path:         path,
+			host:         host,
+			lastHashedAt: lastHashedAt,
+		})
+		duplicateGroups[hash] = group
+	}
+
+	var totalSpaceSaved int64
+	duplicatesFound := len(duplicateGroups)
+
+	// Print results
+	for hash, group := range duplicateGroups {
+		duplicateCount := len(group.files) - 1
+		totalSpaceSaved += group.size * int64(duplicateCount)
+
+		fmt.Printf("\n%sDuplicate files (hash: %s, size: %d bytes):%s\n",
+			opts.Colors.HeaderColor, hash, group.size, opts.Colors.ResetColor)
+
+		for _, f := range group.files {
+			fmt.Printf("%s  %s [%s] (hashed at: %s)%s\n",
+				opts.Colors.FileColor, f.path, f.host,
+				f.lastHashedAt.Format("2006-01-02 15:04:05.000000"),
+				opts.Colors.ResetColor)
+		}
 	}
 
 	if duplicatesFound == 0 {
 		fmt.Println("No duplicates found")
 	} else {
 		fmt.Printf("\nFound %d groups of duplicate files\n", duplicatesFound)
+		fmt.Printf("Potential disk space savings: %.2f GB\n", float64(totalSpaceSaved)/(1024*1024*1024))
 	}
 
 	return rows.Err()
