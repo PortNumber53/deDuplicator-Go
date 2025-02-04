@@ -1,0 +1,14 @@
+[Unit]
+Description=Deduplicator File Hash Service
+After=network.target postgresql.service
+
+[Service]
+Type=oneshot
+Environment=HOME=%h
+Environment=GOROOT=/usr/local/go
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:/usr/local/go/bin
+ExecStart=%h/source/deduplicator/scripts/hash-files.sh
+WorkingDirectory=%h/source/deduplicator
+
+[Install]
+WantedBy=default.target
