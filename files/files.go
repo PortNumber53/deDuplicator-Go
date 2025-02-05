@@ -4,11 +4,13 @@ import (
 	"bufio"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -442,6 +444,441 @@ func PruneNonExistentFiles(db *sql.DB, opts PruneOptions) error {
 			removedCount, totalSize)
 	}
 	fmt.Printf("Report generated: %s\n", reportFileName)
+
+	return nil
+}
+
+// OrganizeOptions defines the options for organizing duplicate files
+type OrganizeOptions struct {
+	Host            string // Specific host to organize files from
+	AllHosts        bool   // Whether to organize files across all hosts
+	DryRun          bool   // If true, only show what would be done without making changes
+	ConflictMoveDir string // If set, move conflicting files to this directory preserving structure
+}
+
+func OrganizeDuplicates(db *sql.DB, opts OrganizeOptions) error {
+	fmt.Println("\nAnalyzing duplicate files for organization...")
+
+	// Get current hostname if no specific host is provided and not organizing all hosts
+	var hostname string
+	var err error
+	if !opts.AllHosts && opts.Host == "" {
+		hostname, err = os.Hostname()
+		if err != nil {
+			return fmt.Errorf("error getting hostname: %v", err)
+		}
+		fmt.Printf("Analyzing duplicates for current host: %s\n", hostname)
+	} else if opts.Host != "" {
+		hostname = opts.Host
+		fmt.Printf("Analyzing duplicates for host: %s\n", hostname)
+	} else {
+		fmt.Println("Analyzing duplicates across all hosts")
+	}
+
+	// Build the query based on options
+	query := `
+		WITH duplicates AS (
+			SELECT hash, COUNT(*) as count
+			FROM files
+			WHERE hash IS NOT NULL`
+
+	if !opts.AllHosts {
+		query += ` AND host = $1`
+	}
+
+	query += `
+			GROUP BY hash
+			HAVING COUNT(*) > 1
+		)
+		SELECT f.hash, f.path, f.host, f.size
+		FROM files f
+		JOIN duplicates d ON f.hash = d.hash
+		WHERE f.hash IS NOT NULL`
+
+	if !opts.AllHosts {
+		query += ` AND f.host = $1`
+	}
+
+	var rows *sql.Rows
+	if !opts.AllHosts {
+		rows, err = db.Query(query, hostname)
+	} else {
+		rows, err = db.Query(query)
+	}
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	// Map to store files by hash
+	type fileEntry struct {
+		path string
+		host string
+		size int64
+	}
+	duplicateGroups := make(map[string][]fileEntry)
+
+	// Set to track directories that contain duplicates
+	duplicateDirs := make(map[string]bool)
+
+	// Collect all duplicate files and track their directories
+	for rows.Next() {
+		var hash, path, host string
+		var size int64
+		if err := rows.Scan(&hash, &path, &host, &size); err != nil {
+			return err
+		}
+
+		duplicateGroups[hash] = append(duplicateGroups[hash], fileEntry{path, host, size})
+		dir := filepath.Dir(path)
+		duplicateDirs[dir] = true
+	}
+
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	// Get total file count, but only for directories containing duplicates
+	totalQuery := `
+		SELECT path
+		FROM files
+		WHERE hash IS NOT NULL`
+	if !opts.AllHosts {
+		totalQuery += ` AND host = $1`
+	}
+
+	var totalRows *sql.Rows
+	if !opts.AllHosts {
+		totalRows, err = db.Query(totalQuery, hostname)
+	} else {
+		totalRows, err = db.Query(totalQuery)
+	}
+	if err != nil {
+		return err
+	}
+	defer totalRows.Close()
+
+	// Map to count total files per relevant directory
+	dirTotalCount := make(map[string]int)
+
+	for totalRows.Next() {
+		var path string
+		if err := totalRows.Scan(&path); err != nil {
+			return err
+		}
+		dir := filepath.Dir(path)
+		// Only count files in directories that contain duplicates
+		if duplicateDirs[dir] {
+			dirTotalCount[dir]++
+		}
+	}
+
+	// Sort directories by total file count
+	type dirRank struct {
+		path       string
+		totalFiles int
+	}
+	var dirs []dirRank
+	for dir := range duplicateDirs {
+		dirs = append(dirs, dirRank{
+			path:       dir,
+			totalFiles: dirTotalCount[dir],
+		})
+	}
+	sort.Slice(dirs, func(i, j int) bool {
+		if dirs[i].totalFiles == dirs[j].totalFiles {
+			// If total count is equal, prefer shorter paths
+			return len(dirs[i].path) < len(dirs[j].path)
+		}
+		return dirs[i].totalFiles > dirs[j].totalFiles
+	})
+
+	// Print directory rankings
+	fmt.Println("\nDirectory rankings (only directories containing duplicates):")
+	for _, dir := range dirs {
+		fmt.Printf("%d total files: %s\n",
+			dir.totalFiles, dir.path)
+	}
+
+	if len(dirs) == 0 {
+		fmt.Println("\nNo duplicate files found to organize.")
+		return nil
+	}
+
+	// For each group of duplicates, determine which files should be moved
+	fmt.Println("\nProposed file moves:")
+	var totalMoves int
+	var totalBytes int64
+
+	// Track moves for report
+	type moveEntry struct {
+		SourcePath      string    `json:"source_path"`
+		DestinationPath string    `json:"destination_path"`
+		FileSize        int64     `json:"file_size"`
+		Host            string    `json:"host"`
+		MovedAt         time.Time `json:"moved_at"`
+	}
+	var moves []moveEntry
+
+	for _, files := range duplicateGroups {
+		// Only process groups that have actual duplicates
+		if len(files) <= 1 {
+			continue
+		}
+
+		// Find which of these files is in the directory with most files
+		var targetFile fileEntry
+		targetDir := ""
+		for _, file := range files {
+			fileDir := filepath.Dir(file.path)
+			// Find this directory's rank
+			for _, dir := range dirs {
+				if dir.path == fileDir {
+					// First directory found in the sorted list is the one with most files
+					if targetDir == "" {
+						targetDir = fileDir
+						targetFile = file
+					}
+					break
+				}
+			}
+		}
+
+		// Move other copies to the target directory
+		for _, file := range files {
+			currentDir := filepath.Dir(file.path)
+			if currentDir == targetDir {
+				continue // Skip files already in the target directory
+			}
+
+			newPath := filepath.Join(targetDir, filepath.Base(file.path))
+			fmt.Printf("Would move:\n  %s\nTo:\n  %s\n", file.path, newPath)
+			fmt.Printf("  (This is a duplicate of: %s)\n\n", targetFile.path)
+			totalMoves++
+			totalBytes += file.size
+
+			if !opts.DryRun {
+				// Record planned move for pre-flight check
+				moves = append(moves, moveEntry{
+					SourcePath:      file.path,
+					DestinationPath: newPath,
+					FileSize:        file.size,
+					Host:            file.host,
+					MovedAt:         time.Now(),
+				})
+			}
+		}
+	}
+
+	// If we're actually moving files, do a pre-flight check
+	if !opts.DryRun && len(moves) > 0 {
+		fmt.Println("\nPerforming pre-flight checks...")
+
+		// Check if any destination paths already exist
+		var conflicts []string
+		var conflictMoves []moveEntry
+		for _, move := range moves {
+			if _, err := os.Stat(move.DestinationPath); err == nil {
+				conflicts = append(conflicts, fmt.Sprintf("  %s (would conflict with move from %s)",
+					move.DestinationPath, move.SourcePath))
+
+				if opts.ConflictMoveDir != "" {
+					// Calculate new path in conflict directory while preserving structure
+					relPath, err := filepath.Rel("/", move.DestinationPath)
+					if err != nil {
+						return fmt.Errorf("error calculating relative path for %s: %v", move.DestinationPath, err)
+					}
+					conflictPath := filepath.Join(opts.ConflictMoveDir, relPath)
+
+					conflictMoves = append(conflictMoves, moveEntry{
+						SourcePath:      move.DestinationPath, // Move the existing file
+						DestinationPath: conflictPath,
+						FileSize:        move.FileSize,
+						Host:            move.Host,
+						MovedAt:         time.Now(),
+					})
+				}
+			} else if !os.IsNotExist(err) {
+				// Some other error occurred while checking the file
+				return fmt.Errorf("error checking destination path %s: %v", move.DestinationPath, err)
+			}
+		}
+
+		// If there are conflicts
+		if len(conflicts) > 0 {
+			if opts.ConflictMoveDir == "" {
+				// If no conflict directory specified, abort
+				fmt.Println("\nError: Cannot proceed with moves. The following destination paths already exist:")
+				for _, conflict := range conflicts {
+					fmt.Println(conflict)
+				}
+				fmt.Println("\nNo files were moved. Please resolve the conflicts by either:")
+				fmt.Println("1. Using --move to specify a directory to move conflicting files to")
+				fmt.Println("2. Manually moving or removing the conflicting files")
+				return nil
+			}
+
+			// Only handle conflicts if --move is specified, don't do the actual organization moves
+			fmt.Printf("\nFound %d conflicts. Moving existing files to %s...\n", len(conflicts), opts.ConflictMoveDir)
+
+			// First create all required directories
+			fmt.Println("Creating directory structure...")
+			for _, move := range conflictMoves {
+				targetDir := filepath.Dir(move.DestinationPath)
+				if err := os.MkdirAll(targetDir, 0755); err != nil {
+					return fmt.Errorf("error creating directory structure %s: %v", targetDir, err)
+				}
+			}
+
+			// Now perform conflict moves
+			fmt.Println("Moving files...")
+			for _, move := range conflictMoves {
+				// Move the conflicting file
+				err = os.Rename(move.SourcePath, move.DestinationPath)
+				if err != nil {
+					return fmt.Errorf("error moving conflicting file %s to %s: %v", move.SourcePath, move.DestinationPath, err)
+				}
+
+				// Update the path in the database
+				_, err = db.Exec(`
+					UPDATE files
+					SET path = $1
+					WHERE path = $2 AND host = $3`,
+					move.DestinationPath, move.SourcePath, move.Host)
+				if err != nil {
+					// Try to move the file back if database update fails
+					if mvErr := os.Rename(move.DestinationPath, move.SourcePath); mvErr != nil {
+						return fmt.Errorf("critical error: failed to update database (%v) and failed to move file back (%v)", err, mvErr)
+					}
+					return fmt.Errorf("error updating file path in database: %v", err)
+				}
+			}
+
+			// Generate report for conflict moves
+			if len(conflictMoves) > 0 {
+				// Generate report file with timestamp
+				timestamp := time.Now().Format("2006-01-02_15-04-05")
+				reportFileName := fmt.Sprintf("conflict_moves_report_%s.json", timestamp)
+
+				// Create report file
+				reportFile, err := os.Create(reportFileName)
+				if err != nil {
+					return fmt.Errorf("error creating report file: %v", err)
+				}
+				defer reportFile.Close()
+
+				// Create a report structure
+				report := struct {
+					Timestamp time.Time   `json:"timestamp"`
+					Host      string      `json:"host"`
+					AllHosts  bool        `json:"all_hosts"`
+					Moves     []moveEntry `json:"moves"`
+				}{
+					Timestamp: time.Now(),
+					Host:      hostname,
+					AllHosts:  opts.AllHosts,
+					Moves:     conflictMoves,
+				}
+
+				// Write JSON report
+				encoder := json.NewEncoder(reportFile)
+				encoder.SetIndent("", "  ")
+				if err := encoder.Encode(report); err != nil {
+					return fmt.Errorf("error writing report: %v", err)
+				}
+
+				fmt.Printf("\nConflict moves report generated: %s\n", reportFileName)
+				fmt.Println("Run the organize command again with --run to perform the organization moves.")
+			}
+
+			return nil
+		}
+
+		fmt.Println("Pre-flight checks passed. Proceeding with moves...")
+
+		// Now perform the actual moves
+		for _, move := range moves {
+			// Create target directory if it doesn't exist
+			targetDir := filepath.Dir(move.DestinationPath)
+			err := os.MkdirAll(targetDir, 0755)
+			if err != nil {
+				return fmt.Errorf("error creating target directory %s: %v", targetDir, err)
+			}
+
+			// Move the file
+			err = os.Rename(move.SourcePath, move.DestinationPath)
+			if err != nil {
+				return fmt.Errorf("error moving file %s to %s: %v", move.SourcePath, move.DestinationPath, err)
+			}
+
+			// Update the path in the database
+			_, err = db.Exec(`
+				UPDATE files
+				SET path = $1
+				WHERE path = $2 AND host = $3`,
+				move.DestinationPath, move.SourcePath, move.Host)
+			if err != nil {
+				// Try to move the file back if database update fails
+				if mvErr := os.Rename(move.DestinationPath, move.SourcePath); mvErr != nil {
+					return fmt.Errorf("critical error: failed to update database (%v) and failed to move file back (%v)", err, mvErr)
+				}
+				return fmt.Errorf("error updating file path in database: %v", err)
+			}
+		}
+	}
+
+	fmt.Printf("\nSummary:\n")
+	var actionText, sizeText string
+	if opts.DryRun {
+		actionText = "that would be moved"
+		sizeText = "to be moved"
+	} else {
+		actionText = "moved"
+		sizeText = "moved"
+	}
+	fmt.Printf("Total files %s: %d\n", actionText, totalMoves)
+	fmt.Printf("Total size of files %s: %.2f MB\n", sizeText, float64(totalBytes)/(1024*1024))
+
+	if !opts.DryRun && len(moves) > 0 {
+		// Generate report file with timestamp
+		timestamp := time.Now().Format("2006-01-02_15-04-05")
+		reportFileName := fmt.Sprintf("moved_files_report_%s.json", timestamp)
+
+		// Create report file
+		reportFile, err := os.Create(reportFileName)
+		if err != nil {
+			return fmt.Errorf("error creating report file: %v", err)
+		}
+		defer reportFile.Close()
+
+		// Create a report structure
+		report := struct {
+			Timestamp time.Time   `json:"timestamp"`
+			Host      string      `json:"host"`
+			AllHosts  bool        `json:"all_hosts"`
+			Moves     []moveEntry `json:"moves"`
+		}{
+			Timestamp: time.Now(),
+			Host:      hostname,
+			AllHosts:  opts.AllHosts,
+			Moves:     moves,
+		}
+
+		// Write JSON report
+		encoder := json.NewEncoder(reportFile)
+		encoder.SetIndent("", "  ")
+		if err := encoder.Encode(report); err != nil {
+			return fmt.Errorf("error writing report: %v", err)
+		}
+
+		fmt.Printf("\nMove report generated: %s\n", reportFileName)
+		fmt.Println("This report can be used to undo the moves if needed.")
+	} else if opts.DryRun {
+		fmt.Println("This was a dry run. No files were actually moved.")
+		fmt.Println("Use --run to actually move the files.")
+	} else {
+		fmt.Println("All files have been moved successfully.")
+	}
 
 	return nil
 }

@@ -37,8 +37,14 @@ func main() {
 	pruneAllHosts := pruneCmd.Bool("all-hosts", false, "Prune files across all hosts")
 	pruneIAmSure := pruneCmd.Bool("i-am-sure", false, "") // Hidden flag required for all-hosts pruning
 
+	organizeCmd := flag.NewFlagSet("organize", flag.ExitOnError)
+	organizeHost := organizeCmd.String("host", "", "Specific host to organize files from")
+	organizeAllHosts := organizeCmd.Bool("all-hosts", false, "Organize files across all hosts")
+	organizeRun := organizeCmd.Bool("run", false, "Actually move the files (default is dry-run)")
+	organizeMove := organizeCmd.String("move", "", "Move conflicting files to this directory, preserving their structure")
+
 	if len(os.Args) < 2 {
-		fmt.Println("Expected 'createdb', 'update', 'hash', 'list' or 'prune' subcommands")
+		fmt.Println("Expected 'createdb', 'update', 'hash', 'list', 'prune' or 'organize' subcommands")
 		os.Exit(1)
 	}
 
@@ -62,6 +68,11 @@ func main() {
 		}
 		lockFile = lock.MustAcquire("prune")
 		defer lockFile.Release()
+	case "organize":
+		err := organizeCmd.Parse(os.Args[2:])
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 
 	// Database connection parameters
@@ -131,6 +142,18 @@ func main() {
 			Host:     *pruneHost,
 			AllHosts: *pruneAllHosts,
 			IAmSure:  *pruneIAmSure,
+		})
+	case "organize":
+		organizeCmd.Parse(os.Args[2:])
+		if *organizeHost != "" && *organizeAllHosts {
+			fmt.Println("Error: Cannot specify both --host and --all-hosts")
+			os.Exit(1)
+		}
+		cmdErr = files.OrganizeDuplicates(database, files.OrganizeOptions{
+			Host:            *organizeHost,
+			AllHosts:        *organizeAllHosts,
+			DryRun:          !*organizeRun,
+			ConflictMoveDir: *organizeMove,
 		})
 	default:
 		fmt.Printf("Unknown command: %s\n", os.Args[1])
