@@ -400,7 +400,7 @@ func PruneNonExistentFiles(db *sql.DB, opts PruneOptions) error {
 		}
 
 		// Check if file exists
-		fileInfo, err := os.Stat(path)
+		_, err = os.Stat(path)
 		if err != nil {
 			if os.IsNotExist(err) {
 				// File doesn't exist, delete from database
@@ -413,7 +413,7 @@ func PruneNonExistentFiles(db *sql.DB, opts PruneOptions) error {
 				sizeStr := "unknown"
 				if size.Valid {
 					sizeStr = fmt.Sprintf("%d", size.Int64)
-					totalSize += size.Int64
+					totalSize += size.Int64 // Only add size for removed files
 				}
 				fmt.Fprintf(reportFile, "%-80s %15s %20s\n", path, sizeStr, host)
 				removedFiles = append(removedFiles, path)
@@ -422,11 +422,6 @@ func PruneNonExistentFiles(db *sql.DB, opts PruneOptions) error {
 				log.Printf("Warning: Error checking file %s: %v", path, err)
 			}
 			continue
-		}
-
-		// If we get here, the file exists
-		if size.Valid {
-			totalSize += fileInfo.Size()
 		}
 	}
 
