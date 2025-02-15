@@ -233,6 +233,21 @@ Requires RabbitMQ environment variables to be set.`,
 			"dedupe queue version --version 1.1.0",
 		},
 	},
+	{
+		Name:        "files",
+		Description: "File management commands",
+		Usage:       "files [find]",
+		Help: `File management commands.
+
+Subcommands:
+  find           - Find and index files in the host's root path
+
+The find command will traverse all files and folders in the host's root path
+and add them to the database. It will not calculate hashes at this stage.`,
+		Examples: []string{
+			"dedupe files find",
+		},
+	},
 }
 
 func printUsage() {
@@ -427,6 +442,55 @@ func handleMigrate(database *sql.DB, args []string) error {
 		return nil
 	default:
 		return fmt.Errorf("unknown migrate subcommand: %s", subcommand)
+	}
+}
+
+func handleFiles(database *sql.DB, args []string) error {
+	if len(args) < 1 {
+		cmd := findCommand("files")
+		if cmd != nil {
+			showCommandHelp(*cmd)
+			return nil
+		}
+		return fmt.Errorf("files command requires a subcommand: find")
+	}
+
+	if args[0] == "help" {
+		cmd := findCommand("files")
+		if cmd != nil {
+			showCommandHelp(*cmd)
+			return nil
+		}
+	}
+
+	// Get hostname for current machine
+	hostname, err := os.Hostname()
+	if err != nil {
+		return fmt.Errorf("error getting hostname: %v", err)
+	}
+
+	// Find host in database by hostname
+	var hostName string
+	err = database.QueryRow(`
+		SELECT name 
+		FROM hosts 
+		WHERE hostname = $1
+	`, hostname).Scan(&hostName)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("no host found for hostname %s, please add it using 'dedupe manage add'", hostname)
+		}
+		return fmt.Errorf("error finding host: %v", err)
+	}
+
+	subcommand := args[0]
+	switch subcommand {
+	case "find":
+		return files.FindFiles(database, files.FindOptions{
+			Host: hostName,
+		})
+	default:
+		return fmt.Errorf("unknown files subcommand: %s", subcommand)
 	}
 }
 
@@ -704,6 +768,8 @@ func main() {
 		})
 	case "manage":
 		cmdErr = handleManage(database, os.Args[2:])
+	case "files":
+		cmdErr = handleFiles(database, os.Args[2:])
 	default:
 		fmt.Printf("Unknown command: %s\n", os.Args[1])
 		os.Exit(1)
