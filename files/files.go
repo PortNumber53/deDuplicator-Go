@@ -11,6 +11,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/schollz/progressbar/v3"
@@ -36,8 +37,9 @@ func calculateFileHash(filePath string) (string, error) {
 	bar := progressbar.NewOptions64(fileInfo.Size(),
 		progressbar.OptionEnableColorCodes(true),
 		progressbar.OptionShowBytes(true),
-		progressbar.OptionSetWidth(15),
-		progressbar.OptionSetDescription(fmt.Sprintf("[cyan]Hashing %s...", filepath.Base(filePath))),
+		progressbar.OptionSetWidth(30),
+		progressbar.OptionFullWidth(),
+		progressbar.OptionSetDescription(fmt.Sprintf("[cyan]Hashing %s", filepath.Base(filePath))),
 		progressbar.OptionSetTheme(progressbar.Theme{
 			Saucer:        "[green]=[reset]",
 			SaucerHead:    "[green]>[reset]",
@@ -99,9 +101,9 @@ func ProcessStdin(ctx context.Context, db *sql.DB) error {
 
 	// Prepare statement for batch inserts
 	stmt, err := tx.Prepare(`
-		INSERT INTO files (path, host, size)
+		INSERT INTO files (path, hostname, size)
 		VALUES ($1, $2, $3)
-		ON CONFLICT (path, host) 
+		ON CONFLICT (path, hostname) 
 		DO UPDATE SET size = EXCLUDED.size
 	`)
 	if err != nil {
@@ -178,13 +180,13 @@ func UpdateHashes(db *sql.DB, force bool, count int) error {
 	query := `
 		SELECT id, path 
 		FROM files 
-		WHERE host = $1 AND hash IS NULL
+		WHERE hostname = $1 AND hash IS NULL
 	`
 	if force {
 		query = `
 			SELECT id, path 
 			FROM files 
-			WHERE host = $1
+			WHERE hostname = $1
 		`
 	}
 	if count > 0 {
@@ -278,62 +280,166 @@ type ColorOptions struct {
 	ResetColor  string
 }
 
-// ListOptions represents options for the list command
-type ListOptions struct {
+// DuplicateListOptions represents options for listing duplicate files
+type DuplicateListOptions struct {
 	Host     string // Specific host to check for duplicates
 	AllHosts bool   // Whether to check across all hosts
 	Count    int    // Limit the number of duplicate groups to show (0 = no limit)
+	MinSize  int64  // Minimum file size to consider
 	Colors   ColorOptions
 }
 
 // FindDuplicates finds and displays duplicate files
-func FindDuplicates(ctx context.Context, db *sql.DB, opts ListOptions) error {
+func FindDuplicates(ctx context.Context, db *sql.DB, opts DuplicateListOptions) error {
+	// If no host specified and not all hosts, use current hostname
+	if opts.Host == "" && !opts.AllHosts {
+		// Get hostname for current machine
+		hostname, err := os.Hostname()
+		if err != nil {
+			return fmt.Errorf("error getting hostname: %v", err)
+		}
+
+		// Convert hostname to lowercase for consistency
+		hostname = strings.ToLower(hostname)
+		log.Printf("Looking up host for hostname: %s", hostname)
+
+		// Find host in database by hostname (case-insensitive)
+		err = db.QueryRow(`
+			SELECT hostname 
+			FROM hosts 
+			WHERE LOWER(hostname) = LOWER($1)
+		`, hostname).Scan(&opts.Host)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return fmt.Errorf("no host found for hostname %s, please add it using 'dedupe manage add' or specify --host", hostname)
+			}
+			return fmt.Errorf("error finding host: %v", err)
+		}
+		log.Printf("Found host: %s", opts.Host)
+	}
+
 	// Build query based on options
 	query := `
-		SELECT hash, array_agg(path) as paths, array_agg(host) as hosts, array_agg(size) as sizes
-		FROM files 
-		WHERE hash IS NOT NULL
+		WITH duplicates AS (
+			SELECT hash, COUNT(*) as count, SUM(size) as total_size
+			FROM files 
+			WHERE hash IS NOT NULL
 	`
+	var args []interface{}
+	var argCount int
+
 	if opts.Host != "" {
-		query += fmt.Sprintf(" AND host = '%s'", opts.Host)
+		argCount++
+		query += fmt.Sprintf(" AND hostname = $%d", argCount)
+		args = append(args, opts.Host)
 	}
+
+	if opts.MinSize > 0 {
+		argCount++
+		query += fmt.Sprintf(" AND size >= $%d", argCount)
+		args = append(args, opts.MinSize)
+	}
+
 	query += `
-		GROUP BY hash 
-		HAVING COUNT(*) > 1
-		ORDER BY array_length(array_agg(path), 1) DESC
+			GROUP BY hash
+			HAVING COUNT(*) > 1
+		)
+		SELECT f.hash, f.path, f.hostname, f.size
+		FROM duplicates d
+		JOIN files f ON f.hash = d.hash
 	`
+
+	if opts.Host != "" {
+		argCount++
+		query += fmt.Sprintf(" AND f.hostname = $%d", argCount)
+		args = append(args, opts.Host)
+	}
+
+	query += ` ORDER BY d.total_size DESC, d.hash, f.path`
+
 	if opts.Count > 0 {
-		query += fmt.Sprintf(" LIMIT %d", opts.Count)
+		argCount++
+		query += fmt.Sprintf(" LIMIT $%d", argCount)
+		args = append(args, opts.Count)
 	}
 
 	// Query duplicate groups
-	rows, err := db.Query(query)
+	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("error querying duplicates: %v", err)
 	}
 	defer rows.Close()
 
-	// Process each duplicate group
-	var totalGroups, totalFiles int
-	for rows.Next() {
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("operation cancelled after processing %d duplicate groups", totalGroups)
-		default:
-		}
+	// Process results
+	var currentHash string
+	var currentGroup struct {
+		Hash      string
+		Size      int64
+		Files     []string
+		Hosts     []string
+		TotalSize int64
+	}
+	var groups []struct {
+		Hash      string
+		Size      int64
+		Files     []string
+		Hosts     []string
+		TotalSize int64
+	}
 
-		var hash string
-		var paths, hosts []string
-		var sizes []int64
-		err := rows.Scan(&hash, &paths, &hosts, &sizes)
-		if err != nil {
+	for rows.Next() {
+		var hash, path, hostname string
+		var size int64
+
+		if err := rows.Scan(&hash, &path, &hostname, &size); err != nil {
 			return fmt.Errorf("error scanning row: %v", err)
 		}
 
+		if hash != currentHash {
+			if currentHash != "" {
+				groups = append(groups, currentGroup)
+			}
+			currentHash = hash
+			currentGroup = struct {
+				Hash      string
+				Size      int64
+				Files     []string
+				Hosts     []string
+				TotalSize int64
+			}{
+				Hash:  hash,
+				Size:  size,
+				Files: make([]string, 0),
+				Hosts: make([]string, 0),
+			}
+		}
+		currentGroup.Files = append(currentGroup.Files, path)
+		currentGroup.Hosts = append(currentGroup.Hosts, hostname)
+		currentGroup.TotalSize += size
+	}
+
+	// Add the last group
+	if currentHash != "" {
+		groups = append(groups, currentGroup)
+	}
+
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("error iterating rows: %v", err)
+	}
+
+	// Print results
+	if len(groups) == 0 {
+		fmt.Println("No duplicate files found.")
+		return nil
+	}
+
+	var totalSavings int64
+	fmt.Printf("Found %d groups of duplicate files:\n\n", len(groups))
+	for _, group := range groups {
 		// Skip if not all hosts when AllHosts is true
 		if opts.AllHosts {
 			allHosts := make(map[string]bool)
-			for _, host := range hosts {
+			for _, host := range group.Hosts {
 				allHosts[host] = true
 			}
 			if len(allHosts) < 2 {
@@ -341,33 +447,42 @@ func FindDuplicates(ctx context.Context, db *sql.DB, opts ListOptions) error {
 			}
 		}
 
-		// Print duplicate group
-		fmt.Printf("%sHash: %s%s\n", opts.Colors.HeaderColor, hash, opts.Colors.ResetColor)
-		for i := range paths {
-			fmt.Printf("%s%s (%s, %d bytes)%s\n",
+		fmt.Printf("%sHash: %s%s\n", opts.Colors.HeaderColor, group.Hash, opts.Colors.ResetColor)
+		fmt.Printf("Size: %s bytes\n", formatBytes(group.Size))
+		fmt.Printf("Duplicates: %d files\n", len(group.Files))
+		fmt.Println("Files:")
+		for i, file := range group.Files {
+			fmt.Printf("%s  %s (%s)%s\n",
 				opts.Colors.FileColor,
-				paths[i],
-				hosts[i],
-				sizes[i],
+				file,
+				group.Hosts[i],
 				opts.Colors.ResetColor)
 		}
+		savings := group.Size * int64(len(group.Files)-1)
+		fmt.Printf("Potential savings: %s bytes\n", formatBytes(savings))
+		totalSavings += savings
 		fmt.Println()
-
-		totalGroups++
-		totalFiles += len(paths)
 	}
 
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("error iterating rows: %v", err)
-	}
-
-	if totalGroups == 0 {
-		fmt.Println("No duplicates found")
-	} else {
-		fmt.Printf("Found %d duplicate groups with %d total files\n", totalGroups, totalFiles)
-	}
-
+	fmt.Printf("\nTotal potential space savings: %s bytes\n", formatBytes(totalSavings))
 	return nil
+}
+
+// formatBytes formats a byte count with thousand separators
+func formatBytes(bytes int64) string {
+	// Convert to string first
+	str := fmt.Sprintf("%d", bytes)
+
+	// Add thousand separators
+	var result []byte
+	for i := len(str) - 1; i >= 0; i-- {
+		if i != len(str)-1 && (len(str)-i-1)%3 == 0 {
+			result = append([]byte{','}, result...)
+		}
+		result = append([]byte{str[i]}, result...)
+	}
+
+	return string(result)
 }
 
 // PruneOptions represents options for the prune command
@@ -430,7 +545,7 @@ func PruneNonExistentFiles(ctx context.Context, db *sql.DB, opts PruneOptions) e
 		query := `
 			SELECT id, path 
 			FROM files 
-			WHERE host = $1
+			WHERE hostname = $1
 		`
 		rows, err := db.Query(query, host.name)
 		if err != nil {
@@ -503,12 +618,12 @@ type OrganizeOptions struct {
 func OrganizeDuplicates(ctx context.Context, db *sql.DB, opts OrganizeOptions) error {
 	// Build query based on options
 	query := `
-		SELECT hash, array_agg(path) as paths, array_agg(host) as hosts, array_agg(size) as sizes
+		SELECT hash, array_agg(path) as paths, array_agg(hostname) as hosts, array_agg(size) as sizes
 		FROM files 
 		WHERE hash IS NOT NULL
 	`
 	if opts.Host != "" {
-		query += fmt.Sprintf(" AND host = '%s'", opts.Host)
+		query += fmt.Sprintf(" AND hostname = '%s'", opts.Host)
 	}
 	query += `
 		GROUP BY hash 
@@ -630,9 +745,9 @@ func DedupFiles(ctx context.Context, db *sql.DB, opts DedupeOptions) error {
 
 	// Build query to find duplicates
 	query := `
-		SELECT hash, array_agg(path) as paths, array_agg(host) as hosts, array_agg(size) as sizes
+		SELECT hash, array_agg(path) as paths, array_agg(hostname) as hosts, array_agg(size) as sizes
 		FROM files 
-		WHERE hash IS NOT NULL AND host = $1
+		WHERE hash IS NOT NULL AND hostname = $1
 		GROUP BY hash 
 		HAVING COUNT(*) > 1
 		ORDER BY array_length(array_agg(path), 1) DESC
@@ -739,4 +854,58 @@ func calculateDestPath(sourcePath, destDir, stripPrefix string) (string, error) 
 	}
 
 	return destPath, nil
+}
+
+// ParseSize parses a human-readable size string (e.g., "1.5G", "500M", "10K") into bytes
+func ParseSize(sizeStr string) (int64, error) {
+	sizeStr = strings.TrimSpace(sizeStr)
+	if sizeStr == "" {
+		return 0, nil
+	}
+
+	// If it's just a number, treat as bytes
+	if num, err := strconv.ParseInt(sizeStr, 10, 64); err == nil {
+		return num, nil
+	}
+
+	// Extract the numeric part and unit
+	var numStr string
+	var unit string
+	for i, c := range sizeStr {
+		if c >= '0' && c <= '9' || c == '.' {
+			numStr += string(c)
+		} else {
+			unit = strings.ToUpper(sizeStr[i:])
+			break
+		}
+	}
+
+	if numStr == "" {
+		return 0, fmt.Errorf("invalid size format: %s", sizeStr)
+	}
+
+	// Parse the numeric part
+	num, err := strconv.ParseFloat(numStr, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid number in size: %s", sizeStr)
+	}
+
+	// Convert to bytes based on unit
+	var multiplier float64
+	switch unit {
+	case "K", "KB":
+		multiplier = 1024
+	case "M", "MB":
+		multiplier = 1024 * 1024
+	case "G", "GB":
+		multiplier = 1024 * 1024 * 1024
+	case "T", "TB":
+		multiplier = 1024 * 1024 * 1024 * 1024
+	case "B", "":
+		multiplier = 1
+	default:
+		return 0, fmt.Errorf("unknown size unit: %s", unit)
+	}
+
+	return int64(num * multiplier), nil
 }

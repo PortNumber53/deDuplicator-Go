@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "github.com/lib/pq"
@@ -46,13 +47,13 @@ func CreateDatabase(db *sql.DB, force bool) error {
 		CREATE TABLE IF NOT EXISTS files (
 			id SERIAL PRIMARY KEY,
 			path TEXT NOT NULL,
-			host TEXT NOT NULL,
+			hostname TEXT NOT NULL,
 			hash TEXT,
 			size BIGINT,
 			last_hashed_at TIMESTAMP,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-			UNIQUE(path, host),
-			FOREIGN KEY (host) REFERENCES hosts(name)
+			UNIQUE(path, hostname),
+			FOREIGN KEY (hostname) REFERENCES hosts(hostname)
 		)
 	`)
 	if err != nil {
@@ -68,7 +69,7 @@ func AddHost(db *sql.DB, name, hostname, ip, rootPath string) error {
 	_, err := db.Exec(`
 		INSERT INTO hosts (name, hostname, ip, root_path)
 		VALUES ($1, $2, $3, $4)
-	`, name, hostname, ip, rootPath)
+	`, name, strings.ToLower(hostname), ip, rootPath)
 	return err
 }
 
@@ -78,7 +79,7 @@ func UpdateHost(db *sql.DB, name, hostname, ip, rootPath string) error {
 		UPDATE hosts 
 		SET hostname = $2, ip = $3, root_path = $4
 		WHERE name = $1
-	`, name, hostname, ip, rootPath)
+	`, name, strings.ToLower(hostname), ip, rootPath)
 	if err != nil {
 		return err
 	}

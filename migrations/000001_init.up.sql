@@ -1,7 +1,7 @@
 CREATE TABLE hosts (
     id SERIAL PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
-    hostname TEXT NOT NULL,
+    hostname TEXT NOT NULL UNIQUE,
     ip TEXT,
     root_path TEXT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP

@@ -128,20 +128,24 @@ Files are hashed using SHA256 for reliable duplicate detection.`,
 	{
 		Name:        "list",
 		Description: "List duplicate files",
-		Usage:       "list [--host HOST] [--all-hosts] [--count N]",
+		Usage:       "list [--host HOST] [--all-hosts] [--count N] [--min-size SIZE]",
 		Help: `List duplicate files in the system.
 
 Options:
   --host HOST    Only show duplicates for specific host
   --all-hosts    Show duplicates across all hosts
   --count N      Limit output to N duplicate groups (0 = unlimited)
+  --min-size SIZE  Minimum file size to consider (e.g., "1M", "1.5G", "500K")
 
-Files are considered duplicates if they have the same hash value.`,
+Files are considered duplicates if they have the same hash value.
+Size units: B (bytes), K/KB, M/MB, G/GB, T/TB (1K = 1024 bytes)`,
 		Examples: []string{
 			"dedupe list",
 			"dedupe list --host myserver",
 			"dedupe list --all-hosts",
 			"dedupe list --count 10",
+			"dedupe list --min-size 1G",
+			"dedupe list --min-size 500M",
 		},
 	},
 	{
@@ -235,26 +239,25 @@ Requires RabbitMQ environment variables to be set.`,
 	},
 	{
 		Name:        "files",
-		Description: "File management commands",
-		Usage:       "files [find|hash]",
-		Help: `File management commands.
+		Description: "List and manage files",
+		Usage:       "files [list|find] [options]",
+		Help: `Manage and analyze files in the system.
 
 Subcommands:
-  find           - Find and index files in the host's root path
-  hash           - Calculate hashes for files in the database
+  list           - List duplicate files and potential space savings
+  find           - Scan and index files from a host
 
-The find command will traverse all files and folders in the host's root path
-and add them to the database. It will not calculate hashes at this stage.
+Options for list:
+  --min-size     - Minimum file size to consider (default: 1MB)
+  --host         - Filter duplicates by specific host
 
-The hash command will calculate SHA-256 hashes for files that don't have hashes yet.
-Options:
-  --refresh      - Recalculate hashes for all files
-  --renew        - Recalculate hashes older than 1 week`,
+The list command shows duplicate files based on their content hash
+and calculates potential space savings from deduplication.`,
 		Examples: []string{
-			"dedupe files find",
-			"dedupe files hash",
-			"dedupe files hash --refresh",
-			"dedupe files hash --renew",
+			"dedupe files list",
+			"dedupe files list --min-size 10MB",
+			"dedupe files list --host myserver",
+			"dedupe files find myhost",
 		},
 	},
 }
@@ -455,66 +458,60 @@ func handleMigrate(database *sql.DB, args []string) error {
 }
 
 func handleFiles(ctx context.Context, database *sql.DB, args []string) error {
-	if len(args) < 1 {
-		cmd := findCommand("files")
-		if cmd != nil {
-			showCommandHelp(*cmd)
-			return nil
-		}
-		return fmt.Errorf("files command requires a subcommand: find or hash")
+	if len(args) < 2 {
+		return fmt.Errorf("files command requires a subcommand: find or list")
 	}
 
-	if args[0] == "help" {
-		cmd := findCommand("files")
-		if cmd != nil {
-			showCommandHelp(*cmd)
-			return nil
-		}
-	}
-
-	// Get hostname for current machine
-	hostname, err := os.Hostname()
-	if err != nil {
-		return fmt.Errorf("error getting hostname: %v", err)
-	}
-
-	// Find host in database by hostname
-	var hostName string
-	err = database.QueryRow(`
-		SELECT name 
-		FROM hosts 
-		WHERE hostname = $1
-	`, hostname).Scan(&hostName)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return fmt.Errorf("no host found for hostname %s, please add it using 'dedupe manage add'", hostname)
-		}
-		return fmt.Errorf("error finding host: %v", err)
-	}
-
-	subcommand := args[0]
-	switch subcommand {
+	switch args[1] {
 	case "find":
+		if len(args) < 3 {
+			return fmt.Errorf("find command requires a host name")
+		}
+		hostName := args[2]
 		return files.FindFiles(ctx, database, files.FindOptions{
 			Host: hostName,
 		})
-	case "hash":
-		// Parse hash command flags
-		hashCmd := flag.NewFlagSet("hash", flag.ExitOnError)
-		hashForce := hashCmd.Bool("force", false, "Force rehash of all files")
-		hashRenew := hashCmd.Bool("renew", false, "Recalculate hashes older than 1 week")
+	case "list":
+		// Parse list command flags
+		listCmd := flag.NewFlagSet("list", flag.ExitOnError)
+		listHost := listCmd.String("host", "", "Specific host to check for duplicates")
+		listAllHosts := listCmd.Bool("all-hosts", false, "Check duplicates across all hosts")
+		listCount := listCmd.Int("count", 0, "Limit the number of duplicate groups to show (0 = no limit)")
+		listMinSize := listCmd.String("min-size", "", "Minimum file size to consider (e.g., \"1M\", \"1.5G\", \"500K\")")
 
-		if err := hashCmd.Parse(args[1:]); err != nil {
-			return fmt.Errorf("error parsing hash command flags: %v", err)
+		if err := listCmd.Parse(args[2:]); err != nil {
+			return fmt.Errorf("error parsing list command flags: %v", err)
 		}
 
-		return files.HashFiles(ctx, database, files.HashOptions{
-			Host:    hostName,
-			Refresh: *hashForce,
-			Renew:   *hashRenew,
+		if *listHost != "" && *listAllHosts {
+			fmt.Println("Error: Cannot specify both --host and --all-hosts")
+			os.Exit(1)
+		}
+
+		var minSize int64
+		if *listMinSize != "" {
+			var err error
+			minSize, err = files.ParseSize(*listMinSize)
+			if err != nil {
+				fmt.Printf("Error parsing min-size: %v\n", err)
+				os.Exit(1)
+			}
+		}
+
+		cmdErr := files.FindDuplicates(ctx, database, files.DuplicateListOptions{
+			Host:     *listHost,
+			AllHosts: *listAllHosts,
+			Count:    *listCount,
+			MinSize:  minSize,
+			Colors: files.ColorOptions{
+				HeaderColor: "\033[33m", // Yellow
+				FileColor:   "\033[90m", // Dark gray
+				ResetColor:  "\033[0m",  // Reset
+			},
 		})
+		return cmdErr
 	default:
-		return fmt.Errorf("unknown files subcommand: %s", subcommand)
+		return fmt.Errorf("unknown files subcommand: %s", args[1])
 	}
 }
 
@@ -572,6 +569,7 @@ func main() {
 	listHost := listCmd.String("host", "", "Specific host to check for duplicates")
 	listAllHosts := listCmd.Bool("all-hosts", false, "Check duplicates across all hosts")
 	listCount := listCmd.Int("count", 0, "Limit the number of duplicate groups to show (0 = no limit)")
+	listMinSize := listCmd.String("min-size", "", "Minimum file size to consider (e.g., \"1M\", \"1.5G\", \"500K\")")
 
 	listenCmd := flag.NewFlagSet("listen", flag.ExitOnError)
 
@@ -606,26 +604,32 @@ func main() {
 		cancel()
 	}()
 
-	// Start RabbitMQ connection if host is configured
+	// Start RabbitMQ connection if needed and host is configured
 	var rabbit *mq.RabbitMQ
-	if os.Getenv("RABBITMQ_HOST") != "" {
-		var err error
-		rabbit, err = mq.NewRabbitMQ(VERSION)
-		if err != nil {
-			log.Printf("Warning: Failed to connect to RabbitMQ: %v", err)
-		} else {
-			defer rabbit.Close()
-			// Start listening for version updates in background
-			shutdown := rabbit.ListenForUpdates(ctx)
-			go func() {
-				select {
-				case <-ctx.Done():
-					return
-				case <-shutdown:
-					log.Println("Received version update notification, initiating graceful shutdown...")
-					cancel()
+	if os.Args[1] == "listen" || os.Args[1] == "queue" {
+		if os.Getenv("RABBITMQ_HOST") != "" {
+			var err error
+			rabbit, err = mq.NewRabbitMQ(VERSION)
+			if err != nil {
+				log.Printf("Warning: Failed to connect to RabbitMQ: %v", err)
+			} else {
+				defer rabbit.Close()
+				// Start listening for version updates in background
+				if os.Args[1] == "listen" {
+					shutdown := rabbit.ListenForUpdates(ctx)
+					go func() {
+						select {
+						case <-ctx.Done():
+							return
+						case <-shutdown:
+							log.Println("Received version update notification, initiating graceful shutdown...")
+							cancel()
+						}
+					}()
 				}
-			}()
+			}
+		} else {
+			log.Fatal("RabbitMQ connection required but RABBITMQ_HOST not configured")
 		}
 	}
 
@@ -772,10 +776,22 @@ func main() {
 			fmt.Println("Error: Cannot specify both --host and --all-hosts")
 			os.Exit(1)
 		}
-		cmdErr = files.FindDuplicates(ctx, database, files.ListOptions{
+
+		var minSize int64
+		if *listMinSize != "" {
+			var err error
+			minSize, err = files.ParseSize(*listMinSize)
+			if err != nil {
+				fmt.Printf("Error parsing min-size: %v\n", err)
+				os.Exit(1)
+			}
+		}
+
+		cmdErr = files.FindDuplicates(ctx, database, files.DuplicateListOptions{
 			Host:     *listHost,
 			AllHosts: *listAllHosts,
 			Count:    *listCount,
+			MinSize:  minSize,
 			Colors: files.ColorOptions{
 				HeaderColor: "\033[33m", // Yellow
 				FileColor:   "\033[90m", // Dark gray

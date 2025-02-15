@@ -20,12 +20,12 @@ type HashOptions struct {
 // HashFiles calculates hashes for files in the database
 func HashFiles(ctx context.Context, db *sql.DB, opts HashOptions) error {
 	// Get host information
-	var rootPath string
+	var rootPath, hostname string
 	err := db.QueryRow(`
-		SELECT root_path 
+		SELECT root_path, hostname
 		FROM hosts 
 		WHERE name = $1
-	`, opts.Host).Scan(&rootPath)
+	`, opts.Host).Scan(&rootPath, &hostname)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return fmt.Errorf("host not found: %s", opts.Host)
@@ -37,7 +37,7 @@ func HashFiles(ctx context.Context, db *sql.DB, opts HashOptions) error {
 	query := `
 		SELECT id, path 
 		FROM files 
-		WHERE host = $1
+		WHERE hostname = $1
 	`
 	if !opts.Refresh {
 		if opts.Renew {
@@ -50,7 +50,7 @@ func HashFiles(ctx context.Context, db *sql.DB, opts HashOptions) error {
 	// First, count total files to process
 	var totalFiles int64
 	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM (%s) AS subquery", query)
-	err = db.QueryRow(countQuery, opts.Host).Scan(&totalFiles)
+	err = db.QueryRow(countQuery, hostname).Scan(&totalFiles)
 	if err != nil {
 		return fmt.Errorf("error counting files: %v", err)
 	}
@@ -86,7 +86,7 @@ func HashFiles(ctx context.Context, db *sql.DB, opts HashOptions) error {
 	defer stmt.Close()
 
 	// Query files to process
-	rows, err := db.Query(query, opts.Host)
+	rows, err := db.Query(query, hostname)
 	if err != nil {
 		return fmt.Errorf("error querying files: %v", err)
 	}
