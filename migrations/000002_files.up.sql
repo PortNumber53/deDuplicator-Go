@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS files (
+CREATE TABLE files (
     id SERIAL PRIMARY KEY,
     path TEXT NOT NULL,
     host TEXT NOT NULL,

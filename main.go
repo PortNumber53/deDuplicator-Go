@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/golang-migrate/migrate"
+	"github.com/golang-migrate/migrate/database/postgres"
 	"github.com/joho/godotenv"
 
 	"deduplicator/db"
@@ -34,7 +37,7 @@ var commands = []Command{
 	{
 		Name:        "migrate",
 		Description: "Run database migrations",
-		Usage:       "migrate [up|down|reset]",
+		Usage:       "migrate [up|down|reset|status]",
 	},
 	{
 		Name:        "createdb",
@@ -200,6 +203,32 @@ func handleMigrate(database *sql.DB, args []string) error {
 		return db.RollbackLastMigration(database)
 	case "reset":
 		return db.ResetDatabase(database)
+	case "status":
+		driver, err := postgres.WithInstance(database, &postgres.Config{})
+		if err != nil {
+			return fmt.Errorf("could not create database driver: %v", err)
+		}
+
+		m, err := migrate.NewWithDatabaseInstance(
+			"file://migrations",
+			"postgres",
+			driver,
+		)
+		if err != nil {
+			return fmt.Errorf("could not create migrate instance: %v", err)
+		}
+
+		version, dirty, err := m.Version()
+		if err != nil {
+			if errors.Is(err, migrate.ErrNilVersion) {
+				fmt.Println("No migrations have been applied")
+				return nil
+			}
+			return fmt.Errorf("could not get migration version: %v", err)
+		}
+
+		fmt.Printf("Current migration version: %d (dirty: %v)\n", version, dirty)
+		return nil
 	default:
 		return fmt.Errorf("unknown migrate subcommand: %s", subcommand)
 	}
