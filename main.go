@@ -20,9 +20,108 @@ import (
 // VERSION represents the current version of the deduplicator tool
 const VERSION = "1.0.0"
 
+// Command represents a subcommand with its description and usage
+type Command struct {
+	Name        string
+	Description string
+	Usage       string
+}
+
+// Available commands
+var commands = []Command{
+	{
+		Name:        "createdb",
+		Description: "Initialize or recreate the database schema",
+		Usage:       "createdb [--force]",
+	},
+	{
+		Name:        "update",
+		Description: "Process file paths from stdin and update the database",
+		Usage:       "update < file_list.txt",
+	},
+	{
+		Name:        "hash",
+		Description: "Calculate and update file hashes in the database",
+		Usage:       "hash [--force] [--count N]",
+	},
+	{
+		Name:        "list",
+		Description: "List duplicate files",
+		Usage:       "list [--host HOST] [--all-hosts] [--count N]",
+	},
+	{
+		Name:        "prune",
+		Description: "Remove entries for files that no longer exist",
+		Usage:       "prune [--host HOST] [--all-hosts]",
+	},
+	{
+		Name:        "organize",
+		Description: "Organize duplicate files by moving them",
+		Usage:       "organize [--host HOST] [--all-hosts] [--run] [--move DIR] [--strip-prefix PREFIX]",
+	},
+	{
+		Name:        "dedupe",
+		Description: "Move duplicate files to a destination directory",
+		Usage:       "dedupe --dest DIR [--run] [--strip-prefix PREFIX] [--count N]",
+	},
+	{
+		Name:        "listen",
+		Description: "Listen for version update messages from RabbitMQ",
+		Usage:       "listen",
+	},
+	{
+		Name:        "queue version",
+		Description: "Publish a version update message to notify running instances",
+		Usage:       "queue version [--version VERSION]",
+	},
+}
+
+func printUsage() {
+	fmt.Printf("Deduplicator %s - A tool for finding and managing duplicate files\n\n", VERSION)
+	fmt.Println("Usage:")
+	fmt.Printf("  %s <command> [options]\n\n", os.Args[0])
+	fmt.Println("Available Commands:")
+
+	// Find the longest command name for padding
+	maxLen := 0
+	for _, cmd := range commands {
+		if len(cmd.Name) > maxLen {
+			maxLen = len(cmd.Name)
+		}
+	}
+
+	// Print each command with aligned descriptions
+	for _, cmd := range commands {
+		fmt.Printf("  %-*s  %s\n", maxLen, cmd.Name, cmd.Description)
+	}
+
+	fmt.Println("\nDetailed Usage:")
+	for _, cmd := range commands {
+		fmt.Printf("  %s %s\n", os.Args[0], cmd.Usage)
+	}
+
+	fmt.Println("\nEnvironment Variables:")
+	fmt.Println("  DB_HOST          PostgreSQL host (default: localhost)")
+	fmt.Println("  DB_PORT          PostgreSQL port (default: 5432)")
+	fmt.Println("  DB_USER          PostgreSQL user (default: postgres)")
+	fmt.Println("  DB_PASSWORD      PostgreSQL password")
+	fmt.Println("  DB_NAME          PostgreSQL database name (default: deduplicator)")
+	fmt.Println("  RABBITMQ_HOST    RabbitMQ host (optional)")
+	fmt.Println("  RABBITMQ_PORT    RabbitMQ port (default: 5672)")
+	fmt.Println("  RABBITMQ_VHOST   RabbitMQ vhost")
+	fmt.Println("  RABBITMQ_USER    RabbitMQ username")
+	fmt.Println("  RABBITMQ_PASSWORD RabbitMQ password")
+	fmt.Println("  RABBITMQ_QUEUE   RabbitMQ queue name (default: dedup_backup)")
+}
+
 func main() {
 	if err := godotenv.Load(); err != nil {
 		log.Printf("Warning: Error loading .env file: %v", err)
+	}
+
+	if len(os.Args) < 2 {
+		printUsage()
+		os.Exit(1)
 	}
 
 	// Create context that can be cancelled
@@ -67,11 +166,6 @@ func main() {
 	dedupeStripPrefix := dedupeCmd.String("strip-prefix", "", "Remove this prefix from paths when moving files")
 	dedupeCount := dedupeCmd.Int("count", 0, "Limit the number of duplicate groups to process (0 = no limit)")
 	dedupeIgnoreDest := dedupeCmd.Bool("ignore-dest", true, "Ignore files that are already in the destination directory")
-
-	if len(os.Args) < 2 {
-		fmt.Println("Expected 'createdb', 'update', 'hash', 'list', 'prune', 'organize', 'dedupe', 'listen' or 'queue' subcommands")
-		os.Exit(1)
-	}
 
 	// Set up signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
