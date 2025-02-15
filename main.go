@@ -1,22 +1,33 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/joho/godotenv"
 
 	"deduplicator/db"
 	"deduplicator/files"
 	"deduplicator/lock"
+	"deduplicator/mq"
 )
+
+// VERSION represents the current version of the deduplicator tool
+const VERSION = "1.0.0"
 
 func main() {
 	if err := godotenv.Load(); err != nil {
 		log.Printf("Warning: Error loading .env file: %v", err)
 	}
+
+	// Create context that can be cancelled
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	// Command line flags
 	createdbCmd := flag.NewFlagSet("createdb", flag.ExitOnError)
@@ -31,6 +42,12 @@ func main() {
 	listCmd := flag.NewFlagSet("list", flag.ExitOnError)
 	listHost := listCmd.String("host", "", "Specific host to check for duplicates")
 	listAllHosts := listCmd.Bool("all-hosts", false, "Check duplicates across all hosts")
+	listCount := listCmd.Int("count", 0, "Limit the number of duplicate groups to show (0 = no limit)")
+
+	listenCmd := flag.NewFlagSet("listen", flag.ExitOnError)
+
+	queueVersionCmd := flag.NewFlagSet("version", flag.ExitOnError)
+	queueVersionValue := queueVersionCmd.String("version", VERSION, "Version number to publish (defaults to current version)")
 
 	pruneCmd := flag.NewFlagSet("prune", flag.ExitOnError)
 	pruneHost := pruneCmd.String("host", "", "Specific host to prune files from")
@@ -42,10 +59,77 @@ func main() {
 	organizeAllHosts := organizeCmd.Bool("all-hosts", false, "Organize files across all hosts")
 	organizeRun := organizeCmd.Bool("run", false, "Actually move the files (default is dry-run)")
 	organizeMove := organizeCmd.String("move", "", "Move conflicting files to this directory, preserving their structure")
+	organizeStripPrefix := organizeCmd.String("strip-prefix", "", "Remove this prefix from paths when moving files")
+
+	dedupeCmd := flag.NewFlagSet("dedupe", flag.ExitOnError)
+	dedupeDest := dedupeCmd.String("dest", "", "Directory to move duplicate files to (required)")
+	dedupeRun := dedupeCmd.Bool("run", false, "Actually move the files (default is dry-run)")
+	dedupeStripPrefix := dedupeCmd.String("strip-prefix", "", "Remove this prefix from paths when moving files")
+	dedupeCount := dedupeCmd.Int("count", 0, "Limit the number of duplicate groups to process (0 = no limit)")
+	dedupeIgnoreDest := dedupeCmd.Bool("ignore-dest", true, "Ignore files that are already in the destination directory")
 
 	if len(os.Args) < 2 {
-		fmt.Println("Expected 'createdb', 'update', 'hash', 'list', 'prune' or 'organize' subcommands")
+		fmt.Println("Expected 'createdb', 'update', 'hash', 'list', 'prune', 'organize', 'dedupe', 'listen' or 'queue' subcommands")
 		os.Exit(1)
+	}
+
+	// Set up signal handling for graceful shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigChan
+		log.Println("Received shutdown signal, initiating graceful shutdown...")
+		cancel()
+	}()
+
+	// Handle commands that don't need database access
+	switch os.Args[1] {
+	case "listen":
+		listenCmd.Parse(os.Args[2:])
+		handleListen(ctx)
+		return
+	case "queue":
+		if len(os.Args) < 3 {
+			fmt.Println("Expected 'version' subcommand for queue command")
+			os.Exit(1)
+		}
+
+		switch os.Args[2] {
+		case "version":
+			queueVersionCmd.Parse(os.Args[3:])
+			if *queueVersionValue == "" {
+				fmt.Println("Error: --version is required")
+				queueVersionCmd.PrintDefaults()
+				os.Exit(1)
+			}
+			handleQueueVersion(ctx, *queueVersionValue)
+			return
+		default:
+			fmt.Printf("Unknown queue subcommand: %s\n", os.Args[2])
+			os.Exit(1)
+		}
+	}
+
+	// Set up RabbitMQ connection for other commands if environment variables are set
+	var rabbit *mq.RabbitMQ
+	if os.Getenv("RABBITMQ_HOST") != "" {
+		var err error
+		rabbit, err = mq.NewRabbitMQ(VERSION)
+		if err != nil {
+			log.Printf("Warning: Failed to connect to RabbitMQ: %v", err)
+		} else {
+			defer rabbit.Close()
+
+			// Start listening for version updates
+			shutdown := rabbit.ListenForUpdates(ctx)
+
+			// Handle version update messages
+			go func() {
+				<-shutdown
+				log.Println("Received version update notification, shutting down...")
+				cancel() // Cancel context to initiate graceful shutdown
+			}()
+		}
 	}
 
 	// Acquire flow-specific lock before proceeding
@@ -70,6 +154,11 @@ func main() {
 		defer lockFile.Release()
 	case "organize":
 		err := organizeCmd.Parse(os.Args[2:])
+		if err != nil {
+			log.Fatal(err)
+		}
+	case "dedupe":
+		err := dedupeCmd.Parse(os.Args[2:])
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -126,6 +215,7 @@ func main() {
 		cmdErr = files.FindDuplicates(database, files.ListOptions{
 			Host:     *listHost,
 			AllHosts: *listAllHosts,
+			Count:    *listCount,
 			Colors: files.ColorOptions{
 				HeaderColor: "\033[33m", // Yellow
 				FileColor:   "\033[90m", // Dark gray
@@ -154,6 +244,20 @@ func main() {
 			AllHosts:        *organizeAllHosts,
 			DryRun:          !*organizeRun,
 			ConflictMoveDir: *organizeMove,
+			StripPrefix:     *organizeStripPrefix,
+		})
+	case "dedupe":
+		dedupeCmd.Parse(os.Args[2:])
+		if *dedupeDest == "" {
+			fmt.Println("Error: --dest is required")
+			os.Exit(1)
+		}
+		cmdErr = files.DedupFiles(database, files.DedupeOptions{
+			DryRun:        !*dedupeRun,
+			DestDir:       *dedupeDest,
+			StripPrefix:   *dedupeStripPrefix,
+			Count:         *dedupeCount,
+			IgnoreDestDir: *dedupeIgnoreDest,
 		})
 	default:
 		fmt.Printf("Unknown command: %s\n", os.Args[1])
@@ -162,5 +266,54 @@ func main() {
 
 	if cmdErr != nil {
 		log.Fatal(cmdErr)
+	}
+}
+
+// handleListen handles the listen command
+func handleListen(ctx context.Context) {
+	if os.Getenv("RABBITMQ_HOST") == "" {
+		log.Fatal("RABBITMQ_HOST environment variable is not set")
+	}
+
+	rabbit, err := mq.NewRabbitMQ(VERSION)
+	if err != nil {
+		log.Fatalf("Failed to connect to RabbitMQ: %v", err)
+	}
+	defer rabbit.Close()
+
+	log.Printf("Listening for messages on queue %s (current version: %s)...",
+		os.Getenv("RABBITMQ_QUEUE"), VERSION)
+	shutdown := rabbit.ListenForUpdates(ctx)
+
+	// Wait for either a shutdown signal or message
+	select {
+	case <-ctx.Done():
+		log.Println("Context cancelled, shutting down...")
+	case <-shutdown:
+		log.Println("Received version update notification, shutting down...")
+	}
+}
+
+// handleQueueVersion handles the queue version command
+func handleQueueVersion(ctx context.Context, version string) {
+	if version == VERSION {
+		log.Printf("Publishing current version: %s", VERSION)
+	} else {
+		log.Printf("Warning: Publishing version %s which differs from current version %s",
+			version, VERSION)
+	}
+
+	if os.Getenv("RABBITMQ_HOST") == "" {
+		log.Fatal("RABBITMQ_HOST environment variable is not set")
+	}
+
+	rabbit, err := mq.NewRabbitMQ(VERSION)
+	if err != nil {
+		log.Fatalf("Failed to connect to RabbitMQ: %v", err)
+	}
+	defer rabbit.Close()
+
+	if err := rabbit.PublishVersionUpdate(ctx, version); err != nil {
+		log.Fatalf("Failed to publish version update: %v", err)
 	}
 }
