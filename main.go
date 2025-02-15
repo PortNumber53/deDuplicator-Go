@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/joho/godotenv"
@@ -30,9 +32,19 @@ type Command struct {
 // Available commands
 var commands = []Command{
 	{
+		Name:        "migrate",
+		Description: "Run database migrations",
+		Usage:       "migrate [up|down|reset]",
+	},
+	{
 		Name:        "createdb",
-		Description: "Initialize or recreate the database schema",
+		Description: "Initialize or recreate the database schema (deprecated, use migrate instead)",
 		Usage:       "createdb [--force]",
+	},
+	{
+		Name:        "manage",
+		Description: "Manage backup hosts (add/edit/delete/list)",
+		Usage:       "manage [add|edit|delete|list] [options]",
 	},
 	{
 		Name:        "update",
@@ -114,6 +126,85 @@ func printUsage() {
 	fmt.Println("  RABBITMQ_QUEUE   RabbitMQ queue name (default: dedup_backup)")
 }
 
+func handleManage(dbConn *sql.DB, args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("manage command requires a subcommand: add, edit, delete, or list")
+	}
+
+	subcommand := args[0]
+	switch subcommand {
+	case "list":
+		hosts, err := db.ListHosts(dbConn)
+		if err != nil {
+			return fmt.Errorf("error listing hosts: %v", err)
+		}
+		if len(hosts) == 0 {
+			fmt.Println("No hosts found")
+			return nil
+		}
+		fmt.Printf("%-20s %-30s %-15s %s\n", "NAME", "HOSTNAME", "IP", "ROOT PATH")
+		fmt.Println(strings.Repeat("-", 80))
+		for _, host := range hosts {
+			fmt.Printf("%-20s %-30s %-15s %s\n", host.Name, host.Hostname, host.IP, host.RootPath)
+		}
+		return nil
+
+	case "add", "edit":
+		if len(args) != 5 {
+			return fmt.Errorf("usage: manage %s <name> <hostname> <ip> <root_path>", subcommand)
+		}
+		name, hostname, ip, rootPath := args[1], args[2], args[3], args[4]
+
+		if subcommand == "add" {
+			err := db.AddHost(dbConn, name, hostname, ip, rootPath)
+			if err != nil {
+				return fmt.Errorf("error adding host: %v", err)
+			}
+			fmt.Printf("Host '%s' added successfully\n", name)
+		} else {
+			err := db.UpdateHost(dbConn, name, hostname, ip, rootPath)
+			if err != nil {
+				return fmt.Errorf("error updating host: %v", err)
+			}
+			fmt.Printf("Host '%s' updated successfully\n", name)
+		}
+		return nil
+
+	case "delete":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: manage delete <name>")
+		}
+		name := args[1]
+		err := db.DeleteHost(dbConn, name)
+		if err != nil {
+			return fmt.Errorf("error deleting host: %v", err)
+		}
+		fmt.Printf("Host '%s' deleted successfully\n", name)
+		return nil
+
+	default:
+		return fmt.Errorf("unknown subcommand: %s", subcommand)
+	}
+}
+
+func handleMigrate(database *sql.DB, args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("migrate command requires a subcommand: up, down, or reset")
+	}
+
+	subcommand := args[0]
+	switch subcommand {
+	case "up":
+		return db.MigrateDatabase(database)
+	case "down":
+		return db.RollbackLastMigration(database)
+	case "reset":
+		return db.ResetDatabase(database)
+	default:
+		return fmt.Errorf("unknown migrate subcommand: %s", subcommand)
+	}
+}
+
 func main() {
 	if err := godotenv.Load(); err != nil {
 		log.Printf("Warning: Error loading .env file: %v", err)
@@ -129,6 +220,8 @@ func main() {
 	defer cancel()
 
 	// Command line flags
+	migrateCmd := flag.NewFlagSet("migrate", flag.ExitOnError)
+
 	createdbCmd := flag.NewFlagSet("createdb", flag.ExitOnError)
 	createdbForce := createdbCmd.Bool("force", false, "Force recreation of tables")
 
@@ -230,6 +323,9 @@ func main() {
 	// Only acquire lock for commands that modify the database
 	var lockFile *lock.Lock
 	switch os.Args[1] {
+	case "migrate":
+		lockFile = lock.MustAcquire("migrate")
+		defer lockFile.Release()
 	case "createdb":
 		lockFile = lock.MustAcquire("createdb")
 		defer lockFile.Release()
@@ -291,7 +387,11 @@ func main() {
 	// Parse subcommands
 	var cmdErr error
 	switch os.Args[1] {
+	case "migrate":
+		migrateCmd.Parse(os.Args[2:])
+		cmdErr = handleMigrate(database, os.Args[2:])
 	case "createdb":
+		log.Println("Warning: createdb command is deprecated, please use 'migrate up' instead")
 		createdbCmd.Parse(os.Args[2:])
 		cmdErr = db.CreateDatabase(database, *createdbForce)
 	case "update":
@@ -353,6 +453,8 @@ func main() {
 			Count:         *dedupeCount,
 			IgnoreDestDir: *dedupeIgnoreDest,
 		})
+	case "manage":
+		cmdErr = handleManage(database, flag.Args()[1:])
 	default:
 		fmt.Printf("Unknown command: %s\n", os.Args[1])
 		os.Exit(1)

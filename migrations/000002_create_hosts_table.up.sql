@@ -1,0 +1,8 @@
+CREATE TABLE IF NOT EXISTS hosts (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    hostname TEXT NOT NULL,
+    ip TEXT,
+    root_path TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+); 
