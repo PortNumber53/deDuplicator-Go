@@ -30,6 +30,8 @@ type Command struct {
 	Name        string
 	Description string
 	Usage       string
+	Help        string   // Detailed help text
+	Examples    []string // Example usages
 }
 
 // Available commands
@@ -38,63 +40,205 @@ var commands = []Command{
 		Name:        "migrate",
 		Description: "Run database migrations",
 		Usage:       "migrate [up|down|reset|status]",
+		Help: `Manage database migrations for schema changes.
+
+Subcommands:
+  up     - Apply all pending migrations
+  down   - Roll back the last applied migration
+  reset  - Drop all tables and reapply migrations
+  status - Show current migration status
+
+The migrations are applied in order based on the numeric prefix of the migration files.`,
+		Examples: []string{
+			"dedupe migrate up",
+			"dedupe migrate down",
+			"dedupe migrate reset",
+			"dedupe migrate status",
+		},
 	},
 	{
 		Name:        "createdb",
 		Description: "Initialize or recreate the database schema (deprecated, use migrate instead)",
 		Usage:       "createdb [--force]",
+		Help: `Initialize or recreate the database schema.
+
+Options:
+  --force  Force recreation of tables by dropping existing ones
+
+Note: This command is deprecated. Please use 'migrate up' instead.`,
+		Examples: []string{
+			"dedupe createdb",
+			"dedupe createdb --force",
+		},
 	},
 	{
 		Name:        "manage",
 		Description: "Manage backup hosts (add/edit/delete/list)",
 		Usage:       "manage [add|edit|delete|list] [options]",
+		Help: `Manage backup hosts in the system.
+
+Subcommands:
+  list           - List all registered hosts
+  add            - Add a new host
+  edit           - Edit an existing host
+  delete         - Remove a host
+
+Arguments for add/edit:
+  <name>         - Unique identifier for the host
+  <hostname>     - DNS hostname or IP address
+  <ip>           - IP address (optional)
+  <root_path>    - Base directory for file scanning`,
+		Examples: []string{
+			"dedupe manage list",
+			"dedupe manage add myhost example.com 192.168.1.100 /data",
+			"dedupe manage edit myhost newhost.com 192.168.1.101 /backup",
+			"dedupe manage delete myhost",
+		},
 	},
 	{
 		Name:        "update",
 		Description: "Process file paths from stdin and update the database",
 		Usage:       "update < file_list.txt",
+		Help: `Update the database with file paths from standard input.
+
+Each line from stdin should contain a single file path. The paths will be
+associated with the current host and stored in the database for deduplication.`,
+		Examples: []string{
+			"find /data -type f | dedupe update",
+			"cat file_list.txt | dedupe update",
+		},
 	},
 	{
 		Name:        "hash",
 		Description: "Calculate and update file hashes in the database",
 		Usage:       "hash [--force] [--count N]",
+		Help: `Calculate and store file hashes for deduplication.
+
+Options:
+  --force        Rehash files even if they already have a hash
+  --count N      Process only N files (0 = unlimited)
+
+Files are hashed using SHA256 for reliable duplicate detection.`,
+		Examples: []string{
+			"dedupe hash",
+			"dedupe hash --force",
+			"dedupe hash --count 1000",
+		},
 	},
 	{
 		Name:        "list",
 		Description: "List duplicate files",
 		Usage:       "list [--host HOST] [--all-hosts] [--count N]",
+		Help: `List duplicate files in the system.
+
+Options:
+  --host HOST    Only show duplicates for specific host
+  --all-hosts    Show duplicates across all hosts
+  --count N      Limit output to N duplicate groups (0 = unlimited)
+
+Files are considered duplicates if they have the same hash value.`,
+		Examples: []string{
+			"dedupe list",
+			"dedupe list --host myserver",
+			"dedupe list --all-hosts",
+			"dedupe list --count 10",
+		},
 	},
 	{
 		Name:        "prune",
 		Description: "Remove entries for files that no longer exist",
 		Usage:       "prune [--host HOST] [--all-hosts]",
+		Help: `Remove database entries for files that no longer exist on disk.
+
+Options:
+  --host HOST    Only prune files from specific host
+  --all-hosts    Prune files across all hosts (requires --i-am-sure)
+
+This command helps keep the database in sync with the actual filesystem.`,
+		Examples: []string{
+			"dedupe prune",
+			"dedupe prune --host myserver",
+			"dedupe prune --all-hosts --i-am-sure",
+		},
 	},
 	{
 		Name:        "organize",
 		Description: "Organize duplicate files by moving them",
 		Usage:       "organize [--host HOST] [--all-hosts] [--run] [--move DIR] [--strip-prefix PREFIX]",
+		Help: `Organize duplicate files by moving them to a new location.
+
+Options:
+  --host HOST          Only organize files from specific host
+  --all-hosts         Organize files across all hosts
+  --run               Actually move files (default is dry-run)
+  --move DIR          Move duplicates to this directory
+  --strip-prefix PREFIX  Remove prefix from paths when moving
+
+By default, this runs in dry-run mode and only shows what would be done.`,
+		Examples: []string{
+			"dedupe organize --move /backup/dupes",
+			"dedupe organize --host myserver --run",
+			"dedupe organize --all-hosts --strip-prefix /data",
+		},
 	},
 	{
 		Name:        "dedupe",
 		Description: "Move duplicate files to a destination directory",
 		Usage:       "dedupe --dest DIR [--run] [--strip-prefix PREFIX] [--count N]",
+		Help: `Move duplicate files to a destination directory.
+
+Options:
+  --dest DIR          Directory to move duplicates to (required)
+  --run              Actually move files (default is dry-run)
+  --strip-prefix PREFIX  Remove prefix from paths when moving
+  --count N          Process only N duplicate groups (0 = unlimited)
+  --ignore-dest      Ignore files already in destination (default: true)
+
+By default, this runs in dry-run mode and only shows what would be done.`,
+		Examples: []string{
+			"dedupe dedupe --dest /backup/dupes",
+			"dedupe dedupe --dest /backup/dupes --run",
+			"dedupe dedupe --dest /backup/dupes --strip-prefix /data",
+		},
 	},
 	{
 		Name:        "listen",
 		Description: "Listen for version update messages from RabbitMQ",
 		Usage:       "listen",
+		Help: `Listen for version update messages from RabbitMQ.
+
+This command connects to RabbitMQ and waits for version update notifications.
+When a new version is published, the process will exit gracefully.
+
+Requires RabbitMQ environment variables to be set.`,
+		Examples: []string{
+			"dedupe listen",
+		},
 	},
 	{
 		Name:        "queue version",
 		Description: "Publish a version update message to notify running instances",
 		Usage:       "queue version [--version VERSION]",
+		Help: `Publish a version update message to notify running instances.
+
+Options:
+  --version VERSION   Version number to publish (defaults to current version)
+
+This command publishes a message to RabbitMQ that will notify all listening
+instances to shut down gracefully.
+
+Requires RabbitMQ environment variables to be set.`,
+		Examples: []string{
+			"dedupe queue version",
+			"dedupe queue version --version 1.1.0",
+		},
 	},
 }
 
 func printUsage() {
 	fmt.Printf("Deduplicator %s - A tool for finding and managing duplicate files\n\n", VERSION)
 	fmt.Println("Usage:")
-	fmt.Printf("  %s <command> [options]\n\n", os.Args[0])
+	fmt.Println("  dedupe <command> [options]\n")
 	fmt.Println("Available Commands:")
 
 	// Find the longest command name for padding
@@ -112,7 +256,7 @@ func printUsage() {
 
 	fmt.Println("\nDetailed Usage:")
 	for _, cmd := range commands {
-		fmt.Printf("  %s %s\n", os.Args[0], cmd.Usage)
+		fmt.Printf("  dedupe %s\n", cmd.Usage)
 	}
 
 	fmt.Println("\nEnvironment Variables:")
@@ -129,9 +273,44 @@ func printUsage() {
 	fmt.Println("  RABBITMQ_QUEUE   RabbitMQ queue name (default: dedup_backup)")
 }
 
+func showCommandHelp(cmd Command) {
+	fmt.Printf("\nCommand: %s - %s\n\n", cmd.Name, cmd.Description)
+	fmt.Printf("Usage:\n  dedupe %s\n\n", cmd.Usage)
+	fmt.Println(cmd.Help)
+	if len(cmd.Examples) > 0 {
+		fmt.Println("\nExamples:")
+		for _, example := range cmd.Examples {
+			fmt.Printf("  %s\n", example)
+		}
+	}
+	fmt.Println()
+}
+
+func findCommand(name string) *Command {
+	for _, cmd := range commands {
+		if cmd.Name == name {
+			return &cmd
+		}
+	}
+	return nil
+}
+
 func handleManage(dbConn *sql.DB, args []string) error {
 	if len(args) < 1 {
+		cmd := findCommand("manage")
+		if cmd != nil {
+			showCommandHelp(*cmd)
+			return nil
+		}
 		return fmt.Errorf("manage command requires a subcommand: add, edit, delete, or list")
+	}
+
+	if args[0] == "help" {
+		cmd := findCommand("manage")
+		if cmd != nil {
+			showCommandHelp(*cmd)
+			return nil
+		}
 	}
 
 	subcommand := args[0]
@@ -142,7 +321,7 @@ func handleManage(dbConn *sql.DB, args []string) error {
 			return fmt.Errorf("error listing hosts: %v", err)
 		}
 		if len(hosts) == 0 {
-			fmt.Println("No hosts found")
+			fmt.Println("No hosts found. Use 'dedupe manage add' to add a host.")
 			return nil
 		}
 		fmt.Printf("%-20s %-30s %-15s %s\n", "NAME", "HOSTNAME", "IP", "ROOT PATH")
@@ -154,7 +333,9 @@ func handleManage(dbConn *sql.DB, args []string) error {
 
 	case "add", "edit":
 		if len(args) != 5 {
-			return fmt.Errorf("usage: manage %s <name> <hostname> <ip> <root_path>", subcommand)
+			fmt.Printf("Usage: dedupe manage %s <name> <hostname> <ip> <root_path>\n", subcommand)
+			fmt.Printf("\nExample:\n  dedupe manage %s myhost example.com 192.168.1.100 /data\n", subcommand)
+			return nil
 		}
 		name, hostname, ip, rootPath := args[1], args[2], args[3], args[4]
 
@@ -175,7 +356,9 @@ func handleManage(dbConn *sql.DB, args []string) error {
 
 	case "delete":
 		if len(args) != 2 {
-			return fmt.Errorf("usage: manage delete <name>")
+			fmt.Println("Usage: dedupe manage delete <name>")
+			fmt.Println("\nExample:\n  dedupe manage delete myhost")
+			return nil
 		}
 		name := args[1]
 		err := db.DeleteHost(dbConn, name)
@@ -192,7 +375,20 @@ func handleManage(dbConn *sql.DB, args []string) error {
 
 func handleMigrate(database *sql.DB, args []string) error {
 	if len(args) < 1 {
+		cmd := findCommand("migrate")
+		if cmd != nil {
+			showCommandHelp(*cmd)
+			return nil
+		}
 		return fmt.Errorf("migrate command requires a subcommand: up, down, or reset")
+	}
+
+	if args[0] == "help" {
+		cmd := findCommand("migrate")
+		if cmd != nil {
+			showCommandHelp(*cmd)
+			return nil
+		}
 	}
 
 	subcommand := args[0]
@@ -242,6 +438,30 @@ func main() {
 	if len(os.Args) < 2 {
 		printUsage()
 		os.Exit(1)
+	}
+
+	// Check for help command
+	if os.Args[1] == "help" {
+		if len(os.Args) == 2 {
+			printUsage()
+			os.Exit(0)
+		}
+		cmd := findCommand(os.Args[2])
+		if cmd != nil {
+			showCommandHelp(*cmd)
+			os.Exit(0)
+		}
+		fmt.Printf("Unknown command: %s\n", os.Args[2])
+		os.Exit(1)
+	}
+
+	// Check if command exists and if help is requested
+	if len(os.Args) > 2 && os.Args[2] == "help" {
+		cmd := findCommand(os.Args[1])
+		if cmd != nil {
+			showCommandHelp(*cmd)
+			os.Exit(0)
+		}
 	}
 
 	// Create context that can be cancelled
@@ -483,7 +703,7 @@ func main() {
 			IgnoreDestDir: *dedupeIgnoreDest,
 		})
 	case "manage":
-		cmdErr = handleManage(database, flag.Args()[1:])
+		cmdErr = handleManage(database, os.Args[2:])
 	default:
 		fmt.Printf("Unknown command: %s\n", os.Args[1])
 		os.Exit(1)
