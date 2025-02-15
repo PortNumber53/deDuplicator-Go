@@ -23,7 +23,7 @@ import (
 )
 
 // VERSION represents the current version of the deduplicator tool
-const VERSION = "1.0.0"
+const VERSION = "1.1.0"
 
 // Command represents a subcommand with its description and usage
 type Command struct {
@@ -236,16 +236,25 @@ Requires RabbitMQ environment variables to be set.`,
 	{
 		Name:        "files",
 		Description: "File management commands",
-		Usage:       "files [find]",
+		Usage:       "files [find|hash]",
 		Help: `File management commands.
 
 Subcommands:
   find           - Find and index files in the host's root path
+  hash           - Calculate hashes for files in the database
 
 The find command will traverse all files and folders in the host's root path
-and add them to the database. It will not calculate hashes at this stage.`,
+and add them to the database. It will not calculate hashes at this stage.
+
+The hash command will calculate SHA-256 hashes for files that don't have hashes yet.
+Options:
+  --refresh      - Recalculate hashes for all files
+  --renew        - Recalculate hashes older than 1 week`,
 		Examples: []string{
 			"dedupe files find",
+			"dedupe files hash",
+			"dedupe files hash --refresh",
+			"dedupe files hash --renew",
 		},
 	},
 }
@@ -445,14 +454,14 @@ func handleMigrate(database *sql.DB, args []string) error {
 	}
 }
 
-func handleFiles(database *sql.DB, args []string) error {
+func handleFiles(ctx context.Context, database *sql.DB, args []string) error {
 	if len(args) < 1 {
 		cmd := findCommand("files")
 		if cmd != nil {
 			showCommandHelp(*cmd)
 			return nil
 		}
-		return fmt.Errorf("files command requires a subcommand: find")
+		return fmt.Errorf("files command requires a subcommand: find or hash")
 	}
 
 	if args[0] == "help" {
@@ -486,8 +495,23 @@ func handleFiles(database *sql.DB, args []string) error {
 	subcommand := args[0]
 	switch subcommand {
 	case "find":
-		return files.FindFiles(database, files.FindOptions{
+		return files.FindFiles(ctx, database, files.FindOptions{
 			Host: hostName,
+		})
+	case "hash":
+		// Parse hash command flags
+		hashCmd := flag.NewFlagSet("hash", flag.ExitOnError)
+		hashForce := hashCmd.Bool("force", false, "Force rehash of all files")
+		hashRenew := hashCmd.Bool("renew", false, "Recalculate hashes older than 1 week")
+
+		if err := hashCmd.Parse(args[1:]); err != nil {
+			return fmt.Errorf("error parsing hash command flags: %v", err)
+		}
+
+		return files.HashFiles(ctx, database, files.HashOptions{
+			Host:    hostName,
+			Refresh: *hashForce,
+			Renew:   *hashRenew,
 		})
 	default:
 		return fmt.Errorf("unknown files subcommand: %s", subcommand)
@@ -542,7 +566,7 @@ func main() {
 
 	hashCmd := flag.NewFlagSet("hash", flag.ExitOnError)
 	hashForce := hashCmd.Bool("force", false, "Force rehash of all files")
-	hashCount := hashCmd.Int("count", 0, "Number of files to process")
+	hashRenew := hashCmd.Bool("renew", false, "Recalculate hashes older than 1 week")
 
 	listCmd := flag.NewFlagSet("list", flag.ExitOnError)
 	listHost := listCmd.String("host", "", "Specific host to check for duplicates")
@@ -582,11 +606,35 @@ func main() {
 		cancel()
 	}()
 
+	// Start RabbitMQ connection if host is configured
+	var rabbit *mq.RabbitMQ
+	if os.Getenv("RABBITMQ_HOST") != "" {
+		var err error
+		rabbit, err = mq.NewRabbitMQ(VERSION)
+		if err != nil {
+			log.Printf("Warning: Failed to connect to RabbitMQ: %v", err)
+		} else {
+			defer rabbit.Close()
+			// Start listening for version updates in background
+			shutdown := rabbit.ListenForUpdates(ctx)
+			go func() {
+				select {
+				case <-ctx.Done():
+					return
+				case <-shutdown:
+					log.Println("Received version update notification, initiating graceful shutdown...")
+					cancel()
+				}
+			}()
+		}
+	}
+
 	// Handle commands that don't need database access
 	switch os.Args[1] {
 	case "listen":
 		listenCmd.Parse(os.Args[2:])
-		handleListen(ctx)
+		// Just wait for shutdown since we're already listening
+		<-ctx.Done()
 		return
 	case "queue":
 		if len(os.Args) < 3 {
@@ -602,33 +650,14 @@ func main() {
 				queueVersionCmd.PrintDefaults()
 				os.Exit(1)
 			}
-			handleQueueVersion(ctx, *queueVersionValue)
+			if rabbit == nil {
+				log.Fatal("RabbitMQ connection not available")
+			}
+			handleQueueVersion(ctx, rabbit, *queueVersionValue)
 			return
 		default:
 			fmt.Printf("Unknown queue subcommand: %s\n", os.Args[2])
 			os.Exit(1)
-		}
-	}
-
-	// Set up RabbitMQ connection for other commands if environment variables are set
-	var rabbit *mq.RabbitMQ
-	if os.Getenv("RABBITMQ_HOST") != "" {
-		var err error
-		rabbit, err = mq.NewRabbitMQ(VERSION)
-		if err != nil {
-			log.Printf("Warning: Failed to connect to RabbitMQ: %v", err)
-		} else {
-			defer rabbit.Close()
-
-			// Start listening for version updates
-			shutdown := rabbit.ListenForUpdates(ctx)
-
-			// Handle version update messages
-			go func() {
-				<-shutdown
-				log.Println("Received version update notification, shutting down...")
-				cancel() // Cancel context to initiate graceful shutdown
-			}()
 		}
 	}
 
@@ -709,17 +738,41 @@ func main() {
 		cmdErr = db.CreateDatabase(database, *createdbForce)
 	case "update":
 		updateCmd.Parse(os.Args[2:])
-		cmdErr = files.ProcessStdin(database)
+		cmdErr = files.ProcessStdin(ctx, database)
 	case "hash":
 		hashCmd.Parse(os.Args[2:])
-		cmdErr = files.UpdateHashes(database, *hashForce, *hashCount)
+		// Get hostname for current machine
+		hostname, err := os.Hostname()
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		// Find host in database by hostname
+		var hostName string
+		err = database.QueryRow(`
+			SELECT name 
+			FROM hosts 
+			WHERE hostname = $1
+		`, hostname).Scan(&hostName)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				log.Fatalf("no host found for hostname %s, please add it using 'dedupe manage add'", hostname)
+			}
+			log.Fatal(err)
+		}
+
+		cmdErr = files.HashFiles(ctx, database, files.HashOptions{
+			Host:    hostName,
+			Refresh: *hashForce,
+			Renew:   *hashRenew,
+		})
 	case "list":
 		listCmd.Parse(os.Args[2:])
 		if *listHost != "" && *listAllHosts {
 			fmt.Println("Error: Cannot specify both --host and --all-hosts")
 			os.Exit(1)
 		}
-		cmdErr = files.FindDuplicates(database, files.ListOptions{
+		cmdErr = files.FindDuplicates(ctx, database, files.ListOptions{
 			Host:     *listHost,
 			AllHosts: *listAllHosts,
 			Count:    *listCount,
@@ -735,7 +788,7 @@ func main() {
 			fmt.Println("Error: Cannot specify both --host and --all-hosts")
 			os.Exit(1)
 		}
-		cmdErr = files.PruneNonExistentFiles(database, files.PruneOptions{
+		cmdErr = files.PruneNonExistentFiles(ctx, database, files.PruneOptions{
 			Host:     *pruneHost,
 			AllHosts: *pruneAllHosts,
 			IAmSure:  *pruneIAmSure,
@@ -746,7 +799,7 @@ func main() {
 			fmt.Println("Error: Cannot specify both --host and --all-hosts")
 			os.Exit(1)
 		}
-		cmdErr = files.OrganizeDuplicates(database, files.OrganizeOptions{
+		cmdErr = files.OrganizeDuplicates(ctx, database, files.OrganizeOptions{
 			Host:            *organizeHost,
 			AllHosts:        *organizeAllHosts,
 			DryRun:          !*organizeRun,
@@ -759,7 +812,7 @@ func main() {
 			fmt.Println("Error: --dest is required")
 			os.Exit(1)
 		}
-		cmdErr = files.DedupFiles(database, files.DedupeOptions{
+		cmdErr = files.DedupFiles(ctx, database, files.DedupeOptions{
 			DryRun:        !*dedupeRun,
 			DestDir:       *dedupeDest,
 			StripPrefix:   *dedupeStripPrefix,
@@ -769,7 +822,7 @@ func main() {
 	case "manage":
 		cmdErr = handleManage(database, os.Args[2:])
 	case "files":
-		cmdErr = handleFiles(database, os.Args[2:])
+		cmdErr = handleFiles(ctx, database, os.Args[2:])
 	default:
 		fmt.Printf("Unknown command: %s\n", os.Args[1])
 		os.Exit(1)
@@ -780,49 +833,14 @@ func main() {
 	}
 }
 
-// handleListen handles the listen command
-func handleListen(ctx context.Context) {
-	if os.Getenv("RABBITMQ_HOST") == "" {
-		log.Fatal("RABBITMQ_HOST environment variable is not set")
-	}
-
-	rabbit, err := mq.NewRabbitMQ(VERSION)
-	if err != nil {
-		log.Fatalf("Failed to connect to RabbitMQ: %v", err)
-	}
-	defer rabbit.Close()
-
-	log.Printf("Listening for messages on queue %s (current version: %s)...",
-		os.Getenv("RABBITMQ_QUEUE"), VERSION)
-	shutdown := rabbit.ListenForUpdates(ctx)
-
-	// Wait for either a shutdown signal or message
-	select {
-	case <-ctx.Done():
-		log.Println("Context cancelled, shutting down...")
-	case <-shutdown:
-		log.Println("Received version update notification, shutting down...")
-	}
-}
-
 // handleQueueVersion handles the queue version command
-func handleQueueVersion(ctx context.Context, version string) {
+func handleQueueVersion(ctx context.Context, rabbit *mq.RabbitMQ, version string) {
 	if version == VERSION {
 		log.Printf("Publishing current version: %s", VERSION)
 	} else {
 		log.Printf("Warning: Publishing version %s which differs from current version %s",
 			version, VERSION)
 	}
-
-	if os.Getenv("RABBITMQ_HOST") == "" {
-		log.Fatal("RABBITMQ_HOST environment variable is not set")
-	}
-
-	rabbit, err := mq.NewRabbitMQ(VERSION)
-	if err != nil {
-		log.Fatalf("Failed to connect to RabbitMQ: %v", err)
-	}
-	defer rabbit.Close()
 
 	if err := rabbit.PublishVersionUpdate(ctx, version); err != nil {
 		log.Fatalf("Failed to publish version update: %v", err)

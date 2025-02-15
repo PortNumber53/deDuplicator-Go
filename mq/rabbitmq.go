@@ -89,7 +89,9 @@ func NewRabbitMQ(currentVersion string) (*RabbitMQ, error) {
 		false,     // delete when unused
 		false,     // exclusive
 		false,     // no-wait
-		nil,       // arguments
+		amqp.Table{ // Added message expiration
+			"x-message-ttl": int32(60000), // Messages expire after 1 minute
+		},
 	)
 	if err != nil {
 		ch.Close()
@@ -125,7 +127,7 @@ func (r *RabbitMQ) ListenForUpdates(ctx context.Context) chan struct{} {
 	msgs, err := r.channel.Consume(
 		r.queue.Name, // queue
 		"",           // consumer
-		true,         // auto-ack
+		false,        // auto-ack
 		false,        // exclusive
 		false,        // no-local
 		false,        // no-wait
@@ -174,11 +176,19 @@ func (r *RabbitMQ) ListenForUpdates(ctx context.Context) chan struct{} {
 				if newVer.GreaterThan(currentVer) {
 					log.Printf("New version %s is newer than current version %s, initiating shutdown",
 						update.Version, r.version)
+					// Acknowledge the message before shutting down
+					if err := msg.Ack(false); err != nil {
+						log.Printf("Error acknowledging message: %v", err)
+					}
 					close(shutdown)
 					return
 				} else {
 					log.Printf("Ignoring version update as current version %s is not older than received version %s",
 						r.version, update.Version)
+					// Acknowledge the message since we've processed it
+					if err := msg.Ack(false); err != nil {
+						log.Printf("Error acknowledging message: %v", err)
+					}
 				}
 			}
 		}
@@ -211,8 +221,9 @@ func (r *RabbitMQ) PublishVersionUpdate(ctx context.Context, version string) err
 		false,        // mandatory
 		false,        // immediate
 		amqp.Publishing{
-			ContentType: "application/json",
-			Body:        body,
+			ContentType:  "application/json",
+			Body:         body,
+			DeliveryMode: amqp.Persistent, // Make messages persistent
 		})
 	if err != nil {
 		return fmt.Errorf("failed to publish version update: %v", err)

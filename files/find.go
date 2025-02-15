@@ -1,6 +1,7 @@
 package files
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log"
@@ -16,7 +17,7 @@ type FindOptions struct {
 }
 
 // FindFiles traverses the root path of the specified host and adds files to the database
-func FindFiles(db *sql.DB, opts FindOptions) error {
+func FindFiles(ctx context.Context, db *sql.DB, opts FindOptions) error {
 	// Get host information
 	var rootPath string
 	err := db.QueryRow(`
@@ -39,16 +40,25 @@ func FindFiles(db *sql.DB, opts FindOptions) error {
 	// First pass: count total files for progress bar
 	var totalFiles int64
 	err = filepath.Walk(rootPath, func(path string, info os.FileInfo, err error) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
 		if err != nil {
 			log.Printf("Warning: Error accessing path %s: %v", path, err)
 			return nil
 		}
-		if !info.IsDir() {
+		if !info.IsDir() && (info.Mode()&os.ModeSymlink) == 0 {
 			totalFiles++
 		}
 		return nil
 	})
 	if err != nil {
+		if err == context.Canceled {
+			return fmt.Errorf("file counting cancelled")
+		}
 		return fmt.Errorf("error counting files: %v", err)
 	}
 
@@ -85,15 +95,24 @@ func FindFiles(db *sql.DB, opts FindOptions) error {
 			BarEnd:        "]",
 		}))
 
+	// Track processed files for partial completion message
+	var processedFiles int64
+
 	// Walk the directory tree
 	err = filepath.Walk(rootPath, func(path string, info os.FileInfo, err error) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
 		if err != nil {
 			log.Printf("Warning: Error accessing path %s: %v", path, err)
 			return nil
 		}
 
-		// Skip directories
-		if info.IsDir() {
+		// Skip directories and symlinks
+		if info.IsDir() || (info.Mode()&os.ModeSymlink) != 0 {
 			return nil
 		}
 
@@ -111,11 +130,16 @@ func FindFiles(db *sql.DB, opts FindOptions) error {
 			return nil
 		}
 
+		processedFiles++
 		bar.Add(1)
 		return nil
 	})
 
 	if err != nil {
+		if err == context.Canceled {
+			fmt.Printf("\nOperation cancelled after processing %d of %d files\n", processedFiles, totalFiles)
+			return fmt.Errorf("operation cancelled")
+		}
 		return fmt.Errorf("error walking directory: %v", err)
 	}
 
