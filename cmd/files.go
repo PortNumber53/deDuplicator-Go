@@ -12,19 +12,51 @@ import (
 
 // HandleFiles handles file-related commands
 func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
-	if len(args) < 2 {
+	if len(args) == 0 || args[0] == "help" {
+		cmd := FindCommand("files")
+		if cmd != nil {
+			ShowCommandHelp(*cmd)
+			return nil
+		}
 		return fmt.Errorf("files command requires a subcommand: find or list")
 	}
 
-	switch args[1] {
+	switch args[0] {
 	case "find":
-		if len(args) < 3 {
-			return fmt.Errorf("find command requires a host name")
+		// Parse find command flags
+		findCmd := flag.NewFlagSet("find", flag.ExitOnError)
+		findHost := findCmd.String("host", "", "Host to find files for (defaults to current host)")
+
+		if err := findCmd.Parse(args[1:]); err != nil {
+			return fmt.Errorf("error parsing find command flags: %v", err)
 		}
-		hostName := args[2]
+
+		hostName := *findHost
+		if hostName == "" {
+			// Get hostname for current machine
+			hostname, err := os.Hostname()
+			if err != nil {
+				return fmt.Errorf("error getting hostname: %v", err)
+			}
+
+			// Find host in database by hostname
+			err = database.QueryRow(`
+				SELECT name 
+				FROM hosts 
+				WHERE hostname = $1
+			`, hostname).Scan(&hostName)
+			if err != nil {
+				if err == sql.ErrNoRows {
+					return fmt.Errorf("no host found for hostname %s, please add it using 'dedupe manage add' or specify --host", hostname)
+				}
+				return fmt.Errorf("error finding host: %v", err)
+			}
+		}
+
 		return files.FindFiles(ctx, database, files.FindOptions{
 			Host: hostName,
 		})
+
 	case "list":
 		// Parse list command flags
 		listCmd := flag.NewFlagSet("list", flag.ExitOnError)
@@ -33,7 +65,7 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 		listCount := listCmd.Int("count", 0, "Limit the number of duplicate groups to show (0 = no limit)")
 		listMinSize := listCmd.String("min-size", "", "Minimum file size to consider (e.g., \"1M\", \"1.5G\", \"500K\")")
 
-		if err := listCmd.Parse(args[2:]); err != nil {
+		if err := listCmd.Parse(args[1:]); err != nil {
 			return fmt.Errorf("error parsing list command flags: %v", err)
 		}
 
@@ -64,6 +96,6 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 			},
 		})
 	default:
-		return fmt.Errorf("unknown files subcommand: %s", args[1])
+		return fmt.Errorf("unknown files subcommand: %s", args[0])
 	}
 }

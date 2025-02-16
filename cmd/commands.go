@@ -222,9 +222,14 @@ Subcommands:
   list           - List duplicate files and potential space savings
   find           - Scan and index files from a host
 
+Options for find:
+  --host         - Host to find files for (defaults to current host)
+
 Options for list:
   --min-size     - Minimum file size to consider (default: 1MB)
   --host         - Filter duplicates by specific host
+  --all-hosts    - Show duplicates across all hosts
+  --count N      - Limit output to N duplicate groups
 
 The list command shows duplicate files based on their content hash
 and calculates potential space savings from deduplication.`,
@@ -232,7 +237,8 @@ and calculates potential space savings from deduplication.`,
 			"dedupe files list",
 			"dedupe files list --min-size 10MB",
 			"dedupe files list --host myserver",
-			"dedupe files find myhost",
+			"dedupe files find",
+			"dedupe files find --host myserver",
 		},
 	},
 }
