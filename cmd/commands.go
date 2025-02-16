@@ -215,30 +215,37 @@ Requires RabbitMQ environment variables to be set.`,
 	{
 		Name:        "files",
 		Description: "List and manage files",
-		Usage:       "files [list|find] [options]",
+		Usage:       "files [list|find|move-dupes] [options]",
 		Help: `Manage and analyze files in the system.
 
 Subcommands:
   list           - List duplicate files and potential space savings
   find           - Scan and index files from a host
+  move-dupes     - Move duplicate files to a target directory
 
 Options for find:
   --host         - Host to find files for (defaults to current host)
 
-Options for list:
+Options for list and move-dupes:
   --min-size     - Minimum file size to consider (default: 1MB)
   --host         - Filter duplicates by specific host
   --all-hosts    - Show duplicates across all hosts
   --count N      - Limit output to N duplicate groups
 
-The list command shows duplicate files based on their content hash
-and calculates potential space savings from deduplication.`,
+Additional options for move-dupes:
+  --target       - Target directory to move duplicates to (required)
+  --dry-run      - Show what would be moved without making changes
+
+The list and move-dupes commands show duplicate files based on their content hash.
+When moving files, the host's root path is stripped from the destination path.`,
 		Examples: []string{
 			"dedupe files list",
 			"dedupe files list --min-size 10MB",
 			"dedupe files list --host myserver",
 			"dedupe files find",
 			"dedupe files find --host myserver",
+			"dedupe files move-dupes --target /backup/dupes",
+			"dedupe files move-dupes --host myserver --target /backup/dupes",
 		},
 	},
 }
