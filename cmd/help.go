@@ -6,7 +6,7 @@ import "fmt"
 func PrintUsage(version string) {
 	fmt.Printf("Deduplicator %s - A tool for finding and managing duplicate files\n\n", version)
 	fmt.Println("Usage:")
-	fmt.Println("  dedupe <command> [options]\n")
+	fmt.Println("  deduplicator <command> [options]\n")
 	fmt.Println("Available Commands:")
 
 	// Find the longest command name for padding
@@ -24,7 +24,7 @@ func PrintUsage(version string) {
 
 	fmt.Println("\nDetailed Usage:")
 	for _, cmd := range Commands {
-		fmt.Printf("  dedupe %s\n", cmd.Usage)
+		fmt.Printf("  deduplicator %s\n", cmd.Usage)
 	}
 
 	fmt.Println("\nEnvironment Variables:")
@@ -44,7 +44,7 @@ func PrintUsage(version string) {
 // ShowCommandHelp shows detailed help for a specific command
 func ShowCommandHelp(cmd Command) {
 	fmt.Printf("\nCommand: %s - %s\n\n", cmd.Name, cmd.Description)
-	fmt.Printf("Usage:\n  dedupe %s\n\n", cmd.Usage)
+	fmt.Printf("Usage:\n  deduplicator %s\n\n", cmd.Usage)
 	fmt.Println(cmd.Help)
 	if len(cmd.Examples) > 0 {
 		fmt.Println("\nExamples:")

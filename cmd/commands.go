@@ -32,10 +32,10 @@ Subcommands:
 
 The migrations are applied in order based on the numeric prefix of the migration files.`,
 		Examples: []string{
-			"dedupe migrate up",
-			"dedupe migrate down",
-			"dedupe migrate reset",
-			"dedupe migrate status",
+			"deduplicator migrate up",
+			"deduplicator migrate down",
+			"deduplicator migrate reset",
+			"deduplicator migrate status",
 		},
 	},
 	{
@@ -49,8 +49,8 @@ Options:
 
 Note: This command is deprecated. Please use 'migrate up' instead.`,
 		Examples: []string{
-			"dedupe createdb",
-			"dedupe createdb --force",
+			"deduplicator createdb",
+			"deduplicator createdb --force",
 		},
 	},
 	{
@@ -71,10 +71,10 @@ Arguments for add/edit:
   <ip>           - IP address (optional)
   <root_path>    - Base directory for file scanning`,
 		Examples: []string{
-			"dedupe manage list",
-			"dedupe manage add myhost example.com 192.168.1.100 /data",
-			"dedupe manage edit myhost newhost.com 192.168.1.101 /backup",
-			"dedupe manage delete myhost",
+			"deduplicator manage list",
+			"deduplicator manage add myhost example.com 192.168.1.100 /data",
+			"deduplicator manage edit myhost newhost.com 192.168.1.101 /backup",
+			"deduplicator manage delete myhost",
 		},
 	},
 	{
@@ -86,8 +86,8 @@ Arguments for add/edit:
 Each line from stdin should contain a single file path. The paths will be
 associated with the current host and stored in the database for deduplication.`,
 		Examples: []string{
-			"find /data -type f | dedupe update",
-			"cat file_list.txt | dedupe update",
+			"find /data -type f | deduplicator update",
+			"cat file_list.txt | deduplicator update",
 		},
 	},
 	{
@@ -104,31 +104,10 @@ Options:
 
 Files are hashed using SHA256 for reliable duplicate detection.`,
 		Examples: []string{
-			"dedupe hash",
-			"dedupe hash --force",
-			"dedupe hash --retry-problematic",
-			"dedupe hash --count 1000",
-		},
-	},
-	{
-		Name:        "list",
-		Description: "List duplicate files (deprecated, use 'files list-dupes' instead)",
-		Usage:       "list [--count N] [--min-size SIZE]",
-		Help: `List duplicate files in the system.
-
-Options:
-  --count N      Limit output to N duplicate groups (0 = unlimited)
-  --min-size SIZE  Minimum file size to consider (e.g., "1M", "1.5G", "500K")
-
-Files are considered duplicates if they have the same hash value.
-Size units: B (bytes), K/KB, M/MB, G/GB, T/TB (1K = 1024 bytes)
-
-Note: This command is deprecated. Please use 'files list-dupes' instead.`,
-		Examples: []string{
-			"dedupe list",
-			"dedupe list --count 10",
-			"dedupe list --min-size 1G",
-			"dedupe list --min-size 500M",
+			"deduplicator hash",
+			"deduplicator hash --force",
+			"deduplicator hash --retry-problematic",
+			"deduplicator hash --count 1000",
 		},
 	},
 	{
@@ -139,7 +118,7 @@ Note: This command is deprecated. Please use 'files list-dupes' instead.`,
 
 This command helps keep the database in sync with the actual filesystem.`,
 		Examples: []string{
-			"dedupe prune",
+			"deduplicator prune",
 		},
 	},
 	{
@@ -155,31 +134,9 @@ Options:
 
 By default, this runs in dry-run mode and only shows what would be done.`,
 		Examples: []string{
-			"dedupe organize --move /backup/dupes",
-			"dedupe organize --run",
-			"dedupe organize --strip-prefix /data",
-		},
-	},
-	{
-		Name:        "dedupe",
-		Description: "Move duplicate files to a destination directory (deprecated, use 'files list-dupes --dest DIR' instead)",
-		Usage:       "dedupe --dest DIR [--run] [--strip-prefix PREFIX] [--count N]",
-		Help: `Move duplicate files to a destination directory.
-
-Options:
-  --dest DIR          Directory to move duplicates to (required)
-  --run              Actually move files (default is dry-run)
-  --strip-prefix PREFIX  Remove prefix from paths when moving
-  --count N          Process only N duplicate groups (0 = unlimited)
-  --ignore-dest      Ignore files already in destination (default: true)
-
-By default, this runs in dry-run mode and only shows what would be done.
-
-Note: This command is deprecated. Please use 'files list-dupes --dest DIR' instead.`,
-		Examples: []string{
-			"dedupe dedupe --dest /backup/dupes",
-			"dedupe dedupe --dest /backup/dupes --run",
-			"dedupe dedupe --dest /backup/dupes --strip-prefix /data",
+			"deduplicator organize --move /backup/dupes",
+			"deduplicator organize --run",
+			"deduplicator organize --strip-prefix /data",
 		},
 	},
 	{
@@ -193,7 +150,7 @@ When a new version is published, the process will exit gracefully.
 
 Requires RabbitMQ environment variables to be set.`,
 		Examples: []string{
-			"dedupe listen",
+			"deduplicator listen",
 		},
 	},
 	{
@@ -202,8 +159,8 @@ Requires RabbitMQ environment variables to be set.`,
 		Usage:       "queue version [--version VERSION]",
 		Help:        `Publish a version update message to notify running instances.`,
 		Examples: []string{
-			"dedupe queue version",
-			"dedupe queue version --version 1.2.0",
+			"deduplicator queue version",
+			"deduplicator queue version --version 1.2.0",
 		},
 	},
 	{
@@ -214,7 +171,7 @@ Requires RabbitMQ environment variables to be set.`,
 
 Subcommands:
   find       - Find files for a specific host
-  list-dupes - List duplicate files with optional deduplication
+  list-dupes - List duplicate files and optionally move them to a destination directory
   move-dupes - Move duplicate files to a target directory
 
 Options for list-dupes:
@@ -225,29 +182,20 @@ Options for list-dupes:
   --strip-prefix PREFIX  Remove prefix from paths when moving
   --ignore-dest       Ignore files already in destination (default: true)
 
+When moving files, the command will:
+  - Keep the duplicate file that is in the folder with the highest number of unique files
+  - Move all other duplicate copies to the destination folder while preserving the folder structure
+
 Examples:
-  dedupe files find
-  dedupe files list-dupes --count 10
-  dedupe files list-dupes --min-size 1G
-  dedupe files list-dupes --dest /backup/dupes --run`,
+  deduplicator files find
+  deduplicator files list-dupes --count 10
+  deduplicator files list-dupes --min-size 1G
+  deduplicator files list-dupes --dest /backup/dupes --run`,
 		Examples: []string{
-			"dedupe files find",
-			"dedupe files list-dupes --count 10",
-			"dedupe files list-dupes --min-size 1G",
-			"dedupe files list-dupes --dest /backup/dupes --run",
-		},
-	},
-	{
-		Name:        "problematic",
-		Description: "List files that timed out during hashing",
-		Usage:       "problematic",
-		Help: `List files that were marked as problematic due to timeout errors during hashing.
-
-These files can be retried using the 'hash --retry-problematic' command.
-
-The list shows the file ID, last attempt time, file size, and path.`,
-		Examples: []string{
-			"dedupe problematic",
+			"deduplicator files find",
+			"deduplicator files list-dupes --count 10",
+			"deduplicator files list-dupes --min-size 1G",
+			"deduplicator files list-dupes --dest /backup/dupes --run",
 		},
 	},
 }

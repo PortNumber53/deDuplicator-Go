@@ -170,39 +170,6 @@ func (a *App) HandleCommand(ctx context.Context, args []string) error {
 			Renew:            renewFlag != nil && renewFlag.Value.(flag.Getter).Get().(bool),
 			RetryProblematic: retryFlag != nil && retryFlag.Value.(flag.Getter).Get().(bool),
 		})
-	case "list":
-		// Parse list command flags
-		flags := CreateFlagSets(a.version)
-		listCmd := flags["list"]
-		if err := listCmd.Parse(args[2:]); err != nil {
-			return fmt.Errorf("error parsing list command flags: %v", err)
-		}
-
-		fmt.Println("Warning: 'list' command is deprecated, please use 'files list-dupes' instead")
-
-		countFlag := listCmd.Lookup("count")
-		minSizeFlag := listCmd.Lookup("min-size")
-
-		// Parse count
-		var count int
-		if countFlag != nil {
-			count = countFlag.Value.(flag.Getter).Get().(int)
-		}
-
-		// Parse min-size
-		var minSize int64
-		if minSizeFlag != nil && minSizeFlag.Value.String() != "" {
-			var err error
-			minSize, err = files.ParseSize(minSizeFlag.Value.String())
-			if err != nil {
-				return fmt.Errorf("invalid min-size value: %v", err)
-			}
-		}
-
-		return files.FindDuplicates(ctx, a.db, files.DuplicateListOptions{
-			Count:   count,
-			MinSize: minSize,
-		})
 	case "prune":
 		// Parse prune command flags
 		flags := CreateFlagSets(a.version)
@@ -251,45 +218,6 @@ func (a *App) HandleCommand(ctx context.Context, args []string) error {
 			DryRun:          runFlag == nil || !runFlag.Value.(flag.Getter).Get().(bool),
 			ConflictMoveDir: moveFlag.Value.String(),
 			StripPrefix:     stripPrefixFlag.Value.String(),
-		})
-	case "dedupe":
-		// Parse dedupe command flags
-		flags := CreateFlagSets(a.version)
-		dedupeCmd := flags["dedupe"]
-		if err := dedupeCmd.Parse(args[2:]); err != nil {
-			return fmt.Errorf("error parsing dedupe command flags: %v", err)
-		}
-
-		fmt.Println("Warning: 'dedupe' command is deprecated, please use 'files list-dupes --dest DIR' instead")
-
-		destFlag := dedupeCmd.Lookup("dest")
-		if destFlag == nil || destFlag.Value.String() == "" {
-			return fmt.Errorf("--dest is required for dedupe command")
-		}
-
-		runFlag := dedupeCmd.Lookup("run")
-		stripPrefixFlag := dedupeCmd.Lookup("strip-prefix")
-		countFlag := dedupeCmd.Lookup("count")
-		ignoreDestFlag := dedupeCmd.Lookup("ignore-dest")
-		minSizeFlag := dedupeCmd.Lookup("min-size")
-
-		// Parse min-size if provided
-		var parsedMinSize int64
-		if minSizeFlag != nil && minSizeFlag.Value.String() != "" {
-			var err error
-			parsedMinSize, err = files.ParseSize(minSizeFlag.Value.String())
-			if err != nil {
-				return fmt.Errorf("error parsing min-size: %v", err)
-			}
-		}
-
-		return files.DedupFiles(ctx, a.db, files.DedupeOptions{
-			DryRun:        runFlag == nil || !runFlag.Value.(flag.Getter).Get().(bool),
-			DestDir:       destFlag.Value.String(),
-			StripPrefix:   stripPrefixFlag.Value.String(),
-			Count:         countFlag.Value.(flag.Getter).Get().(int),
-			IgnoreDestDir: ignoreDestFlag == nil || ignoreDestFlag.Value.(flag.Getter).Get().(bool),
-			MinSize:       parsedMinSize,
 		})
 	case "manage":
 		return HandleManage(a.db, args[2:])

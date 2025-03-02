@@ -35,7 +35,7 @@ func HandleManage(dbConn *sql.DB, args []string) error {
 			return fmt.Errorf("error listing hosts: %v", err)
 		}
 		if len(hosts) == 0 {
-			fmt.Println("No hosts found. Use 'dedupe manage add' to add a host.")
+			fmt.Println("No hosts found. Use 'deduplicator manage add' to add a host.")
 			return nil
 		}
 		fmt.Printf("%-20s %-30s %-15s %s\n", "NAME", "HOSTNAME", "IP", "ROOT PATH")
@@ -47,8 +47,8 @@ func HandleManage(dbConn *sql.DB, args []string) error {
 
 	case "add", "edit":
 		if len(args) != 5 {
-			fmt.Printf("Usage: dedupe manage %s <name> <hostname> <ip> <root_path>\n", subcommand)
-			fmt.Printf("\nExample:\n  dedupe manage %s myhost example.com 192.168.1.100 /data\n", subcommand)
+			fmt.Printf("Usage: deduplicator manage %s <n> <hostname> <ip> <root_path>\n", subcommand)
+			fmt.Printf("\nExample:\n  deduplicator manage %s myhost example.com 192.168.1.100 /data\n", subcommand)
 			return nil
 		}
 		name, hostname, ip, rootPath := args[1], args[2], args[3], args[4]
@@ -70,8 +70,8 @@ func HandleManage(dbConn *sql.DB, args []string) error {
 
 	case "delete":
 		if len(args) != 2 {
-			fmt.Println("Usage: dedupe manage delete <name>")
-			fmt.Println("\nExample:\n  dedupe manage delete myhost")
+			fmt.Println("Usage: deduplicator manage delete <n>")
+			fmt.Println("\nExample:\n  deduplicator manage delete myhost")
 			return nil
 		}
 		name := args[1]

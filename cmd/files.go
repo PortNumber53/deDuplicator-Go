@@ -19,7 +19,7 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 			ShowCommandHelp(*cmd)
 			return nil
 		}
-		return fmt.Errorf("files command requires a subcommand: find, list, list-dupes, or move-dupes")
+		return fmt.Errorf("files command requires a subcommand: find, list-dupes, or move-dupes")
 	}
 
 	switch args[0] {
@@ -51,7 +51,7 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 			`, hostname).Scan(&hostName)
 			if err != nil {
 				if err == sql.ErrNoRows {
-					return fmt.Errorf("no host found for hostname %s, please add it using 'dedupe manage add' or specify --host", hostname)
+					return fmt.Errorf("no host found for hostname %s, please add it using 'deduplicator manage add' or specify --host", hostname)
 				}
 				return fmt.Errorf("error finding host: %v", err)
 			}
@@ -93,7 +93,7 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 		`, hostname).Scan(&hostName)
 		if err != nil {
 			if err == sql.ErrNoRows {
-				return fmt.Errorf("no host found for hostname %s, please add it using 'dedupe manage add'", hostname)
+				return fmt.Errorf("no host found for hostname %s, please add it using 'deduplicator manage add'", hostname)
 			}
 			return fmt.Errorf("error finding host: %v", err)
 		}
@@ -110,6 +110,11 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 
 		// If dest directory is specified, use DedupFiles, otherwise use FindDuplicates
 		if *destDir != "" {
+			// Warn if --run is not specified
+			if !*run {
+				fmt.Println("Note: Running in dry-run mode. Use --run to actually move files.")
+			}
+
 			return files.DedupFiles(ctx, database, files.DedupeOptions{
 				DryRun:        !*run,
 				DestDir:       *destDir,
@@ -125,25 +130,19 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 			})
 		}
 
-	case "list", "move-dupes":
+	case "move-dupes":
 		// Parse command flags
 		cmd := flag.NewFlagSet(args[0], flag.ExitOnError)
 		count := cmd.Int("count", 0, "Limit the number of duplicate groups to show (0 = no limit)")
 		minSize := cmd.String("min-size", "", "Minimum file size to consider (e.g., \"1M\", \"1.5G\", \"500K\")")
-
-		// Additional flags for move-dupes
-		var target string
-		var dryRun bool
-		if args[0] == "move-dupes" {
-			cmd.StringVar(&target, "target", "", "Target directory to move duplicates to (required)")
-			cmd.BoolVar(&dryRun, "dry-run", false, "Show what would be moved without making changes")
-		}
+		target := cmd.String("target", "", "Target directory to move duplicates to (required)")
+		dryRun := cmd.Bool("dry-run", false, "Show what would be moved without making changes")
 
 		if err := cmd.Parse(args[1:]); err != nil {
 			return fmt.Errorf("error parsing command flags: %v", err)
 		}
 
-		if args[0] == "move-dupes" && target == "" {
+		if *target == "" {
 			return fmt.Errorf("--target is required for move-dupes command")
 		}
 
@@ -165,7 +164,7 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 		`, hostname).Scan(&hostName)
 		if err != nil {
 			if err == sql.ErrNoRows {
-				return fmt.Errorf("no host found for hostname %s, please add it using 'dedupe manage add'", hostname)
+				return fmt.Errorf("no host found for hostname %s, please add it using 'deduplicator manage add'", hostname)
 			}
 			return fmt.Errorf("error finding host: %v", err)
 		}
@@ -180,20 +179,13 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 			}
 		}
 
-		opts := files.DuplicateListOptions{
+		return files.MoveDuplicates(ctx, database, files.DuplicateListOptions{
 			Count:   *count,
 			MinSize: parsedMinSize,
-		}
-
-		if args[0] == "list" {
-			fmt.Println("Warning: 'files list' is deprecated, please use 'files list-dupes' instead")
-			return files.FindDuplicates(ctx, database, opts)
-		} else {
-			return files.MoveDuplicates(ctx, database, opts, files.MoveOptions{
-				TargetDir: target,
-				DryRun:    dryRun,
-			})
-		}
+		}, files.MoveOptions{
+			TargetDir: *target,
+			DryRun:    *dryRun,
+		})
 
 	default:
 		return fmt.Errorf("unknown files subcommand: %s", args[0])
