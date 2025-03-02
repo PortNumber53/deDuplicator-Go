@@ -57,6 +57,18 @@ func FindDuplicates(ctx context.Context, db *sql.DB, opts DuplicateListOptions) 
 	query += `
 			GROUP BY hash
 			HAVING COUNT(*) > 1
+	`
+
+	// If count is specified, limit the number of duplicate groups
+	if opts.Count > 0 {
+		argCount++
+		query += fmt.Sprintf(" ORDER BY total_size DESC LIMIT $%d", argCount)
+		args = append(args, opts.Count)
+	} else {
+		query += ` ORDER BY total_size DESC`
+	}
+
+	query += `
 		)
 		SELECT f.hash, f.path, f.hostname, f.size
 		FROM duplicates d
@@ -64,12 +76,6 @@ func FindDuplicates(ctx context.Context, db *sql.DB, opts DuplicateListOptions) 
 		WHERE LOWER(f.hostname) = LOWER($1)
 		ORDER BY d.total_size DESC, d.hash, f.path
 	`
-
-	if opts.Count > 0 {
-		argCount++
-		query += fmt.Sprintf(" LIMIT $%d", argCount)
-		args = append(args, opts.Count)
-	}
 
 	// Query duplicate groups
 	rows, err := db.QueryContext(ctx, query, args...)
