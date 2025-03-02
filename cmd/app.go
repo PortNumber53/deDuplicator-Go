@@ -3,9 +3,11 @@ package cmd
 import (
 	"context"
 	"database/sql"
+	"flag"
 	"fmt"
 	"log"
 	"os"
+	"strings"
 
 	"deduplicator/db"
 	"deduplicator/files"
@@ -135,11 +137,14 @@ func (a *App) HandleCommand(ctx context.Context, args []string) error {
 			return fmt.Errorf("failed to get hostname: %v", err)
 		}
 
+		// Convert hostname to lowercase for consistency
+		hostname = strings.ToLower(hostname)
+
 		var hostName string
 		err = a.db.QueryRow(`
 			SELECT name 
 			FROM hosts 
-			WHERE hostname = $1
+			WHERE LOWER(hostname) = LOWER($1)
 		`, hostname).Scan(&hostName)
 		if err != nil {
 			if err == sql.ErrNoRows {
@@ -148,44 +153,139 @@ func (a *App) HandleCommand(ctx context.Context, args []string) error {
 			return err
 		}
 
+		// Parse hash command flags
+		flags := CreateFlagSets(a.version)
+		hashCmd := flags["hash"]
+		if err := hashCmd.Parse(args[2:]); err != nil {
+			return fmt.Errorf("error parsing hash command flags: %v", err)
+		}
+
+		forceFlag := hashCmd.Lookup("force")
+		renewFlag := hashCmd.Lookup("renew")
+		retryFlag := hashCmd.Lookup("retry-problematic")
+
 		return files.HashFiles(ctx, a.db, files.HashOptions{
-			Host:    hostName,
-			Refresh: false, // TODO: Add flag support
-			Renew:   false,
+			Host:             hostName,
+			Refresh:          forceFlag != nil && forceFlag.Value.(flag.Getter).Get().(bool),
+			Renew:            renewFlag != nil && renewFlag.Value.(flag.Getter).Get().(bool),
+			RetryProblematic: retryFlag != nil && retryFlag.Value.(flag.Getter).Get().(bool),
 		})
 	case "list":
+		// Parse list command flags
+		flags := CreateFlagSets(a.version)
+		listCmd := flags["list"]
+		if err := listCmd.Parse(args[2:]); err != nil {
+			return fmt.Errorf("error parsing list command flags: %v", err)
+		}
+
+		countFlag := listCmd.Lookup("count")
+		minSizeFlag := listCmd.Lookup("min-size")
+
+		// Parse count
+		var count int
+		if countFlag != nil {
+			count = countFlag.Value.(flag.Getter).Get().(int)
+		}
+
+		// Parse min-size
+		var minSize int64
+		if minSizeFlag != nil && minSizeFlag.Value.String() != "" {
+			var err error
+			minSize, err = files.ParseSize(minSizeFlag.Value.String())
+			if err != nil {
+				return fmt.Errorf("invalid min-size value: %v", err)
+			}
+		}
+
 		return files.FindDuplicates(ctx, a.db, files.DuplicateListOptions{
-			Host:     "", // TODO: Add flag support
-			AllHosts: false,
-			Count:    0,
-			MinSize:  0,
-			Colors: files.ColorOptions{
-				HeaderColor: "\033[33m", // Yellow
-				FileColor:   "\033[90m", // Dark gray
-				ResetColor:  "\033[0m",  // Reset
-			},
+			Count:   count,
+			MinSize: minSize,
 		})
 	case "prune":
-		return files.PruneNonExistentFiles(ctx, a.db, files.PruneOptions{
-			Host:     "", // TODO: Add flag support
-			AllHosts: false,
-			IAmSure:  false,
-		})
+		// Parse prune command flags
+		flags := CreateFlagSets(a.version)
+		pruneCmd := flags["prune"]
+		if err := pruneCmd.Parse(args[2:]); err != nil {
+			return fmt.Errorf("error parsing prune command flags: %v", err)
+		}
+
+		return files.PruneNonExistentFiles(ctx, a.db, files.PruneOptions{})
+	case "problematic":
+		hostname, err := os.Hostname()
+		if err != nil {
+			return fmt.Errorf("failed to get hostname: %v", err)
+		}
+
+		// Convert hostname to lowercase for consistency
+		hostname = strings.ToLower(hostname)
+
+		var hostName string
+		err = a.db.QueryRow(`
+			SELECT name 
+			FROM hosts 
+			WHERE LOWER(hostname) = LOWER($1)
+		`, hostname).Scan(&hostName)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return fmt.Errorf("no host found for hostname %s, please add it using 'dedupe manage add'", hostname)
+			}
+			return err
+		}
+
+		return files.ListProblematicFiles(ctx, a.db, hostName)
 	case "organize":
+		// Parse organize command flags
+		flags := CreateFlagSets(a.version)
+		organizeCmd := flags["organize"]
+		if err := organizeCmd.Parse(args[2:]); err != nil {
+			return fmt.Errorf("error parsing organize command flags: %v", err)
+		}
+
+		runFlag := organizeCmd.Lookup("run")
+		moveFlag := organizeCmd.Lookup("move")
+		stripPrefixFlag := organizeCmd.Lookup("strip-prefix")
+
 		return files.OrganizeDuplicates(ctx, a.db, files.OrganizeOptions{
-			Host:            "", // TODO: Add flag support
-			AllHosts:        false,
-			DryRun:          true,
-			ConflictMoveDir: "",
-			StripPrefix:     "",
+			DryRun:          runFlag == nil || !runFlag.Value.(flag.Getter).Get().(bool),
+			ConflictMoveDir: moveFlag.Value.String(),
+			StripPrefix:     stripPrefixFlag.Value.String(),
 		})
 	case "dedupe":
+		// Parse dedupe command flags
+		flags := CreateFlagSets(a.version)
+		dedupeCmd := flags["dedupe"]
+		if err := dedupeCmd.Parse(args[2:]); err != nil {
+			return fmt.Errorf("error parsing dedupe command flags: %v", err)
+		}
+
+		destFlag := dedupeCmd.Lookup("dest")
+		if destFlag == nil || destFlag.Value.String() == "" {
+			return fmt.Errorf("--dest is required for dedupe command")
+		}
+
+		runFlag := dedupeCmd.Lookup("run")
+		stripPrefixFlag := dedupeCmd.Lookup("strip-prefix")
+		countFlag := dedupeCmd.Lookup("count")
+		ignoreDestFlag := dedupeCmd.Lookup("ignore-dest")
+		minSizeFlag := dedupeCmd.Lookup("min-size")
+
+		// Parse min-size if provided
+		var parsedMinSize int64
+		if minSizeFlag != nil && minSizeFlag.Value.String() != "" {
+			var err error
+			parsedMinSize, err = files.ParseSize(minSizeFlag.Value.String())
+			if err != nil {
+				return fmt.Errorf("error parsing min-size: %v", err)
+			}
+		}
+
 		return files.DedupFiles(ctx, a.db, files.DedupeOptions{
-			DryRun:        true, // TODO: Add flag support
-			DestDir:       "",
-			StripPrefix:   "",
-			Count:         0,
-			IgnoreDestDir: true,
+			DryRun:        runFlag == nil || !runFlag.Value.(flag.Getter).Get().(bool),
+			DestDir:       destFlag.Value.String(),
+			StripPrefix:   stripPrefixFlag.Value.String(),
+			Count:         countFlag.Value.(flag.Getter).Get().(int),
+			IgnoreDestDir: ignoreDestFlag == nil || ignoreDestFlag.Value.(flag.Getter).Get().(bool),
+			MinSize:       parsedMinSize,
 		})
 	case "manage":
 		return HandleManage(a.db, args[2:])

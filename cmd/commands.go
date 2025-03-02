@@ -1,5 +1,12 @@
 package cmd
 
+import (
+	"context"
+	"database/sql"
+
+	"deduplicator/files"
+)
+
 // Command represents a subcommand with its description and usage
 type Command struct {
 	Name        string
@@ -86,29 +93,30 @@ associated with the current host and stored in the database for deduplication.`,
 	{
 		Name:        "hash",
 		Description: "Calculate and update file hashes in the database",
-		Usage:       "hash [--force] [--count N]",
+		Usage:       "hash [--force] [--renew] [--retry-problematic] [--count N]",
 		Help: `Calculate and store file hashes for deduplication.
 
 Options:
-  --force        Rehash files even if they already have a hash
-  --count N      Process only N files (0 = unlimited)
+  --force              Rehash files even if they already have a hash
+  --renew              Recalculate hashes older than 1 week
+  --retry-problematic  Retry files that previously timed out
+  --count N            Process only N files (0 = unlimited)
 
 Files are hashed using SHA256 for reliable duplicate detection.`,
 		Examples: []string{
 			"dedupe hash",
 			"dedupe hash --force",
+			"dedupe hash --retry-problematic",
 			"dedupe hash --count 1000",
 		},
 	},
 	{
 		Name:        "list",
 		Description: "List duplicate files",
-		Usage:       "list [--host HOST] [--all-hosts] [--count N] [--min-size SIZE]",
+		Usage:       "list [--count N] [--min-size SIZE]",
 		Help: `List duplicate files in the system.
 
 Options:
-  --host HOST    Only show duplicates for specific host
-  --all-hosts    Show duplicates across all hosts
   --count N      Limit output to N duplicate groups (0 = unlimited)
   --min-size SIZE  Minimum file size to consider (e.g., "1M", "1.5G", "500K")
 
@@ -116,8 +124,6 @@ Files are considered duplicates if they have the same hash value.
 Size units: B (bytes), K/KB, M/MB, G/GB, T/TB (1K = 1024 bytes)`,
 		Examples: []string{
 			"dedupe list",
-			"dedupe list --host myserver",
-			"dedupe list --all-hosts",
 			"dedupe list --count 10",
 			"dedupe list --min-size 1G",
 			"dedupe list --min-size 500M",
@@ -126,29 +132,21 @@ Size units: B (bytes), K/KB, M/MB, G/GB, T/TB (1K = 1024 bytes)`,
 	{
 		Name:        "prune",
 		Description: "Remove entries for files that no longer exist",
-		Usage:       "prune [--host HOST] [--all-hosts]",
+		Usage:       "prune",
 		Help: `Remove database entries for files that no longer exist on disk.
-
-Options:
-  --host HOST    Only prune files from specific host
-  --all-hosts    Prune files across all hosts (requires --i-am-sure)
 
 This command helps keep the database in sync with the actual filesystem.`,
 		Examples: []string{
 			"dedupe prune",
-			"dedupe prune --host myserver",
-			"dedupe prune --all-hosts --i-am-sure",
 		},
 	},
 	{
 		Name:        "organize",
 		Description: "Organize duplicate files by moving them",
-		Usage:       "organize [--host HOST] [--all-hosts] [--run] [--move DIR] [--strip-prefix PREFIX]",
+		Usage:       "organize [--run] [--move DIR] [--strip-prefix PREFIX]",
 		Help: `Organize duplicate files by moving them to a new location.
 
 Options:
-  --host HOST          Only organize files from specific host
-  --all-hosts         Organize files across all hosts
   --run               Actually move files (default is dry-run)
   --move DIR          Move duplicates to this directory
   --strip-prefix PREFIX  Remove prefix from paths when moving
@@ -156,8 +154,8 @@ Options:
 By default, this runs in dry-run mode and only shows what would be done.`,
 		Examples: []string{
 			"dedupe organize --move /backup/dupes",
-			"dedupe organize --host myserver --run",
-			"dedupe organize --all-hosts --strip-prefix /data",
+			"dedupe organize --run",
+			"dedupe organize --strip-prefix /data",
 		},
 	},
 	{
@@ -228,8 +226,6 @@ Options for find:
 
 Options for list and move-dupes:
   --min-size     - Minimum file size to consider (default: 1MB)
-  --host         - Filter duplicates by specific host
-  --all-hosts    - Show duplicates across all hosts
   --count N      - Limit output to N duplicate groups
 
 Additional options for move-dupes:
@@ -241,11 +237,22 @@ When moving files, the host's root path is stripped from the destination path.`,
 		Examples: []string{
 			"dedupe files list",
 			"dedupe files list --min-size 10MB",
-			"dedupe files list --host myserver",
 			"dedupe files find",
 			"dedupe files find --host myserver",
 			"dedupe files move-dupes --target /backup/dupes",
-			"dedupe files move-dupes --host myserver --target /backup/dupes",
+		},
+	},
+	{
+		Name:        "problematic",
+		Description: "List files that timed out during hashing",
+		Usage:       "problematic",
+		Help: `List files that were marked as problematic due to timeout errors during hashing.
+
+These files can be retried using the 'hash --retry-problematic' command.
+
+The list shows the file ID, last attempt time, file size, and path.`,
+		Examples: []string{
+			"dedupe problematic",
 		},
 	},
 }
@@ -258,4 +265,9 @@ func FindCommand(name string) *Command {
 		}
 	}
 	return nil
+}
+
+func HandlePrune(ctx context.Context, db *sql.DB) error {
+	opts := files.PruneOptions{}
+	return files.PruneNonExistentFiles(ctx, db, opts)
 }

@@ -11,11 +11,6 @@ import (
 	"github.com/schollz/progressbar/v3"
 )
 
-// FindOptions represents options for the find command
-type FindOptions struct {
-	Host string
-}
-
 // FindFiles traverses the root path of the specified host and adds files to the database
 func FindFiles(ctx context.Context, db *sql.DB, opts FindOptions) error {
 	// Get host information
@@ -24,7 +19,7 @@ func FindFiles(ctx context.Context, db *sql.DB, opts FindOptions) error {
 	err := db.QueryRow(`
 		SELECT root_path, hostname
 		FROM hosts 
-		WHERE name = $1
+		WHERE LOWER(name) = LOWER($1)
 	`, opts.Host).Scan(&rootPath, &hostname)
 	if err != nil {
 		if err == sql.ErrNoRows {

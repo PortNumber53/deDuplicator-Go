@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"deduplicator/files"
-	"log"
 )
 
 // HandleFiles handles file-related commands
@@ -41,11 +40,14 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 				return fmt.Errorf("error getting hostname: %v", err)
 			}
 
-			// Find host in database by hostname
+			// Convert hostname to lowercase for consistency
+			hostname = strings.ToLower(hostname)
+
+			// Find host in database by hostname (case-insensitive)
 			err = database.QueryRow(`
 				SELECT name 
 				FROM hosts 
-				WHERE hostname = $1
+				WHERE LOWER(hostname) = LOWER($1)
 			`, hostname).Scan(&hostName)
 			if err != nil {
 				if err == sql.ErrNoRows {
@@ -62,8 +64,6 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 	case "list", "move-dupes":
 		// Parse command flags
 		cmd := flag.NewFlagSet(args[0], flag.ExitOnError)
-		host := cmd.String("host", "", "Specific host to check for duplicates")
-		allHosts := cmd.Bool("all-hosts", false, "Check duplicates across all hosts")
 		count := cmd.Int("count", 0, "Limit the number of duplicate groups to show (0 = no limit)")
 		minSize := cmd.String("min-size", "", "Minimum file size to consider (e.g., \"1M\", \"1.5G\", \"500K\")")
 
@@ -83,34 +83,27 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 			return fmt.Errorf("--target is required for move-dupes command")
 		}
 
-		if *host != "" && *allHosts {
-			fmt.Println("Error: Cannot specify both --host and --all-hosts")
-			os.Exit(1)
+		// Get hostname for current machine
+		hostname, err := os.Hostname()
+		if err != nil {
+			return fmt.Errorf("error getting hostname: %v", err)
 		}
 
-		// If no host specified and not all hosts, use current hostname
-		if *host == "" && !*allHosts {
-			// Get hostname for current machine
-			hostname, err := os.Hostname()
-			if err != nil {
-				return fmt.Errorf("error getting hostname: %v", err)
-			}
-			hostname = strings.ToLower(hostname)
-			log.Printf("Looking up host for hostname: %s", hostname)
+		// Convert hostname to lowercase for consistency
+		hostname = strings.ToLower(hostname)
 
-			// Find host in database by hostname (case-insensitive)
-			err = database.QueryRow(`
-				SELECT hostname
-				FROM hosts
-				WHERE LOWER(hostname) = LOWER($1)
-			`, hostname).Scan(host)
-			if err != nil {
-				if err == sql.ErrNoRows {
-					return fmt.Errorf("no host found for hostname %s, please add it using 'dedupe manage add' or specify --host", hostname)
-				}
-				return fmt.Errorf("error finding host: %v", err)
+		// Find host in database by hostname (case-insensitive)
+		var hostName string
+		err = database.QueryRow(`
+			SELECT name 
+			FROM hosts 
+			WHERE LOWER(hostname) = LOWER($1)
+		`, hostname).Scan(&hostName)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return fmt.Errorf("no host found for hostname %s, please add it using 'dedupe manage add'", hostname)
 			}
-			log.Printf("Found host: %s", *host)
+			return fmt.Errorf("error finding host: %v", err)
 		}
 
 		var parsedMinSize int64
@@ -124,15 +117,8 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 		}
 
 		opts := files.DuplicateListOptions{
-			Host:     *host,
-			AllHosts: *allHosts,
-			Count:    *count,
-			MinSize:  parsedMinSize,
-			Colors: files.ColorOptions{
-				HeaderColor: "\033[33m", // Yellow
-				FileColor:   "\033[90m", // Dark gray
-				ResetColor:  "\033[0m",  // Reset
-			},
+			Count:   *count,
+			MinSize: parsedMinSize,
 		}
 
 		if args[0] == "list" {
