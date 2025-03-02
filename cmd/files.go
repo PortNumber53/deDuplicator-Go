@@ -19,7 +19,7 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 			ShowCommandHelp(*cmd)
 			return nil
 		}
-		return fmt.Errorf("files command requires a subcommand: find or list")
+		return fmt.Errorf("files command requires a subcommand: find, list, list-dupes, or move-dupes")
 	}
 
 	switch args[0] {
@@ -60,6 +60,70 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 		return files.FindFiles(ctx, database, files.FindOptions{
 			Host: hostName,
 		})
+
+	case "list-dupes":
+		// Parse command flags
+		cmd := flag.NewFlagSet(args[0], flag.ExitOnError)
+		count := cmd.Int("count", 0, "Limit the number of duplicate groups to show (0 = no limit)")
+		minSize := cmd.String("min-size", "", "Minimum file size to consider (e.g., \"1M\", \"1.5G\", \"500K\")")
+		destDir := cmd.String("dest", "", "Directory to move duplicates to (if specified)")
+		run := cmd.Bool("run", false, "Actually move files (default is dry-run)")
+		stripPrefix := cmd.String("strip-prefix", "", "Remove this prefix from paths when moving files")
+		ignoreDestDir := cmd.Bool("ignore-dest", true, "Ignore files that are already in the destination directory")
+
+		if err := cmd.Parse(args[1:]); err != nil {
+			return fmt.Errorf("error parsing command flags: %v", err)
+		}
+
+		// Get hostname for current machine
+		hostname, err := os.Hostname()
+		if err != nil {
+			return fmt.Errorf("error getting hostname: %v", err)
+		}
+
+		// Convert hostname to lowercase for consistency
+		hostname = strings.ToLower(hostname)
+
+		// Find host in database by hostname (case-insensitive)
+		var hostName string
+		err = database.QueryRow(`
+			SELECT name 
+			FROM hosts 
+			WHERE LOWER(hostname) = LOWER($1)
+		`, hostname).Scan(&hostName)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return fmt.Errorf("no host found for hostname %s, please add it using 'dedupe manage add'", hostname)
+			}
+			return fmt.Errorf("error finding host: %v", err)
+		}
+
+		var parsedMinSize int64
+		if *minSize != "" {
+			var err error
+			parsedMinSize, err = files.ParseSize(*minSize)
+			if err != nil {
+				fmt.Printf("Error parsing min-size: %v\n", err)
+				os.Exit(1)
+			}
+		}
+
+		// If dest directory is specified, use DedupFiles, otherwise use FindDuplicates
+		if *destDir != "" {
+			return files.DedupFiles(ctx, database, files.DedupeOptions{
+				DryRun:        !*run,
+				DestDir:       *destDir,
+				StripPrefix:   *stripPrefix,
+				Count:         *count,
+				IgnoreDestDir: *ignoreDestDir,
+				MinSize:       parsedMinSize,
+			})
+		} else {
+			return files.FindDuplicates(ctx, database, files.DuplicateListOptions{
+				Count:   *count,
+				MinSize: parsedMinSize,
+			})
+		}
 
 	case "list", "move-dupes":
 		// Parse command flags
@@ -122,6 +186,7 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 		}
 
 		if args[0] == "list" {
+			fmt.Println("Warning: 'files list' is deprecated, please use 'files list-dupes' instead")
 			return files.FindDuplicates(ctx, database, opts)
 		} else {
 			return files.MoveDuplicates(ctx, database, opts, files.MoveOptions{

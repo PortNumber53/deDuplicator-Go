@@ -66,7 +66,7 @@ Subcommands:
   delete         - Remove a host
 
 Arguments for add/edit:
-  <name>         - Unique identifier for the host
+  <n>         - Unique identifier for the host
   <hostname>     - DNS hostname or IP address
   <ip>           - IP address (optional)
   <root_path>    - Base directory for file scanning`,
@@ -112,7 +112,7 @@ Files are hashed using SHA256 for reliable duplicate detection.`,
 	},
 	{
 		Name:        "list",
-		Description: "List duplicate files",
+		Description: "List duplicate files (deprecated, use 'files list-dupes' instead)",
 		Usage:       "list [--count N] [--min-size SIZE]",
 		Help: `List duplicate files in the system.
 
@@ -121,7 +121,9 @@ Options:
   --min-size SIZE  Minimum file size to consider (e.g., "1M", "1.5G", "500K")
 
 Files are considered duplicates if they have the same hash value.
-Size units: B (bytes), K/KB, M/MB, G/GB, T/TB (1K = 1024 bytes)`,
+Size units: B (bytes), K/KB, M/MB, G/GB, T/TB (1K = 1024 bytes)
+
+Note: This command is deprecated. Please use 'files list-dupes' instead.`,
 		Examples: []string{
 			"dedupe list",
 			"dedupe list --count 10",
@@ -160,7 +162,7 @@ By default, this runs in dry-run mode and only shows what would be done.`,
 	},
 	{
 		Name:        "dedupe",
-		Description: "Move duplicate files to a destination directory",
+		Description: "Move duplicate files to a destination directory (deprecated, use 'files list-dupes --dest DIR' instead)",
 		Usage:       "dedupe --dest DIR [--run] [--strip-prefix PREFIX] [--count N]",
 		Help: `Move duplicate files to a destination directory.
 
@@ -171,7 +173,9 @@ Options:
   --count N          Process only N duplicate groups (0 = unlimited)
   --ignore-dest      Ignore files already in destination (default: true)
 
-By default, this runs in dry-run mode and only shows what would be done.`,
+By default, this runs in dry-run mode and only shows what would be done.
+
+Note: This command is deprecated. Please use 'files list-dupes --dest DIR' instead.`,
 		Examples: []string{
 			"dedupe dedupe --dest /backup/dupes",
 			"dedupe dedupe --dest /backup/dupes --run",
@@ -196,50 +200,41 @@ Requires RabbitMQ environment variables to be set.`,
 		Name:        "queue version",
 		Description: "Publish a version update message to notify running instances",
 		Usage:       "queue version [--version VERSION]",
-		Help: `Publish a version update message to notify running instances.
-
-Options:
-  --version VERSION   Version number to publish (defaults to current version)
-
-This command publishes a message to RabbitMQ that will notify all listening
-instances to shut down gracefully.
-
-Requires RabbitMQ environment variables to be set.`,
+		Help:        `Publish a version update message to notify running instances.`,
 		Examples: []string{
 			"dedupe queue version",
-			"dedupe queue version --version 1.1.0",
+			"dedupe queue version --version 1.2.0",
 		},
 	},
 	{
 		Name:        "files",
-		Description: "List and manage files",
-		Usage:       "files [list|find|move-dupes] [options]",
-		Help: `Manage and analyze files in the system.
+		Description: "File-related commands (find, list-dupes, move-dupes)",
+		Usage:       "files [find|list-dupes|move-dupes] [options]",
+		Help: `File-related commands for finding and managing files.
 
 Subcommands:
-  list           - List duplicate files and potential space savings
-  find           - Scan and index files from a host
-  move-dupes     - Move duplicate files to a target directory
+  find       - Find files for a specific host
+  list-dupes - List duplicate files with optional deduplication
+  move-dupes - Move duplicate files to a target directory
 
-Options for find:
-  --host         - Host to find files for (defaults to current host)
+Options for list-dupes:
+  --count N           Limit output to N duplicate groups (0 = unlimited)
+  --min-size SIZE     Minimum file size to consider (e.g., "1M", "1.5G", "500K")
+  --dest DIR          Directory to move duplicates to (if specified)
+  --run               Actually move files (default is dry-run)
+  --strip-prefix PREFIX  Remove prefix from paths when moving
+  --ignore-dest       Ignore files already in destination (default: true)
 
-Options for list and move-dupes:
-  --min-size     - Minimum file size to consider (default: 1MB)
-  --count N      - Limit output to N duplicate groups
-
-Additional options for move-dupes:
-  --target       - Target directory to move duplicates to (required)
-  --dry-run      - Show what would be moved without making changes
-
-The list and move-dupes commands show duplicate files based on their content hash.
-When moving files, the host's root path is stripped from the destination path.`,
+Examples:
+  dedupe files find
+  dedupe files list-dupes --count 10
+  dedupe files list-dupes --min-size 1G
+  dedupe files list-dupes --dest /backup/dupes --run`,
 		Examples: []string{
-			"dedupe files list",
-			"dedupe files list --min-size 10MB",
 			"dedupe files find",
-			"dedupe files find --host myserver",
-			"dedupe files move-dupes --target /backup/dupes",
+			"dedupe files list-dupes --count 10",
+			"dedupe files list-dupes --min-size 1G",
+			"dedupe files list-dupes --dest /backup/dupes --run",
 		},
 	},
 	{

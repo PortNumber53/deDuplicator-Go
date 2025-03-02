@@ -178,6 +178,8 @@ func (a *App) HandleCommand(ctx context.Context, args []string) error {
 			return fmt.Errorf("error parsing list command flags: %v", err)
 		}
 
+		fmt.Println("Warning: 'list' command is deprecated, please use 'files list-dupes' instead")
+
 		countFlag := listCmd.Lookup("count")
 		minSizeFlag := listCmd.Lookup("min-size")
 
@@ -257,6 +259,8 @@ func (a *App) HandleCommand(ctx context.Context, args []string) error {
 		if err := dedupeCmd.Parse(args[2:]); err != nil {
 			return fmt.Errorf("error parsing dedupe command flags: %v", err)
 		}
+
+		fmt.Println("Warning: 'dedupe' command is deprecated, please use 'files list-dupes --dest DIR' instead")
 
 		destFlag := dedupeCmd.Lookup("dest")
 		if destFlag == nil || destFlag.Value.String() == "" {
