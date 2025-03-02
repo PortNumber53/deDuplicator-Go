@@ -58,6 +58,15 @@ func CreateFlagSets(version string) map[string]*flag.FlagSet {
 	filesMoveCmd.String("strip-prefix", "", "Strip this prefix from paths when moving")
 	flagSets["files-move-dupes"] = filesMoveCmd
 
+	// Files hash command flags
+	filesHashCmd := flag.NewFlagSet("files-hash", flag.ContinueOnError)
+	filesHashCmd.Bool("help", false, "Show help for files hash command")
+	filesHashCmd.Bool("force", false, "Rehash files even if they already have a hash")
+	filesHashCmd.Bool("renew", false, "Recalculate hashes older than 1 week")
+	filesHashCmd.Bool("retry-problematic", false, "Retry files that previously timed out")
+	filesHashCmd.Int("count", 0, "Process only N files (0 = unlimited)")
+	flagSets["files-hash"] = filesHashCmd
+
 	// Manage command flags
 	manageCmd := flag.NewFlagSet("manage", flag.ContinueOnError)
 	manageCmd.Bool("help", false, "Show help for manage command")

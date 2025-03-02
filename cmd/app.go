@@ -130,46 +130,14 @@ func (a *App) HandleCommand(ctx context.Context, args []string) error {
 		log.Println("Warning: createdb command is deprecated, please use 'migrate up' instead")
 		return db.CreateDatabase(a.db, false) // TODO: Add force flag support
 	case "update":
-		return files.ProcessStdin(ctx, a.db)
-	case "hash":
-		hostname, err := os.Hostname()
-		if err != nil {
-			return fmt.Errorf("failed to get hostname: %v", err)
-		}
-
-		// Convert hostname to lowercase for consistency
-		hostname = strings.ToLower(hostname)
-
-		var hostName string
-		err = a.db.QueryRow(`
-			SELECT name 
-			FROM hosts 
-			WHERE LOWER(hostname) = LOWER($1)
-		`, hostname).Scan(&hostName)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				return fmt.Errorf("no host found for hostname %s, please add it using 'dedupe manage add'", hostname)
-			}
-			return err
-		}
-
-		// Parse hash command flags
+		// Parse update command flags
 		flags := CreateFlagSets(a.version)
-		hashCmd := flags["hash"]
-		if err := hashCmd.Parse(args[2:]); err != nil {
-			return fmt.Errorf("error parsing hash command flags: %v", err)
+		updateCmd := flags["update"]
+		if err := updateCmd.Parse(args[2:]); err != nil {
+			return fmt.Errorf("error parsing update command flags: %v", err)
 		}
 
-		forceFlag := hashCmd.Lookup("force")
-		renewFlag := hashCmd.Lookup("renew")
-		retryFlag := hashCmd.Lookup("retry-problematic")
-
-		return files.HashFiles(ctx, a.db, files.HashOptions{
-			Host:             hostName,
-			Refresh:          forceFlag != nil && forceFlag.Value.(flag.Getter).Get().(bool),
-			Renew:            renewFlag != nil && renewFlag.Value.(flag.Getter).Get().(bool),
-			RetryProblematic: retryFlag != nil && retryFlag.Value.(flag.Getter).Get().(bool),
-		})
+		return files.ProcessStdin(ctx, a.db)
 	case "prune":
 		// Parse prune command flags
 		flags := CreateFlagSets(a.version)
@@ -196,7 +164,7 @@ func (a *App) HandleCommand(ctx context.Context, args []string) error {
 		`, hostname).Scan(&hostName)
 		if err != nil {
 			if err == sql.ErrNoRows {
-				return fmt.Errorf("no host found for hostname %s, please add it using 'dedupe manage add'", hostname)
+				return fmt.Errorf("no host found for hostname %s, please add it using 'deduplicator manage add'", hostname)
 			}
 			return err
 		}

@@ -92,7 +92,7 @@ associated with the current host and stored in the database for deduplication.`,
 	},
 	{
 		Name:        "hash",
-		Description: "Calculate and update file hashes in the database",
+		Description: "Calculate and update file hashes in the database (deprecated, use 'files hash' instead)",
 		Usage:       "hash [--force] [--renew] [--retry-problematic] [--count N]",
 		Help: `Calculate and store file hashes for deduplication.
 
@@ -101,6 +101,8 @@ Options:
   --renew              Recalculate hashes older than 1 week
   --retry-problematic  Retry files that previously timed out
   --count N            Process only N files (0 = unlimited)
+
+Note: This command is deprecated. Please use 'files hash' instead.
 
 Files are hashed using SHA256 for reliable duplicate detection.`,
 		Examples: []string{
@@ -165,14 +167,15 @@ Requires RabbitMQ environment variables to be set.`,
 	},
 	{
 		Name:        "files",
-		Description: "File-related commands (find, list-dupes, move-dupes)",
-		Usage:       "files [find|list-dupes|move-dupes] [options]",
+		Description: "File-related commands (find, list-dupes, move-dupes, hash)",
+		Usage:       "files [find|list-dupes|move-dupes|hash] [options]",
 		Help: `File-related commands for finding and managing files.
 
 Subcommands:
   find       - Find files for a specific host
   list-dupes - List duplicate files and optionally move them to a destination directory
   move-dupes - Move duplicate files to a target directory
+  hash       - Calculate and update file hashes in the database
 
 Options for list-dupes:
   --count N           Limit output to N duplicate groups (0 = unlimited)
@@ -182,6 +185,12 @@ Options for list-dupes:
   --strip-prefix PREFIX  Remove prefix from paths when moving
   --ignore-dest       Ignore files already in destination (default: true)
 
+Options for hash:
+  --force              Rehash files even if they already have a hash
+  --renew              Recalculate hashes older than 1 week
+  --retry-problematic  Retry files that previously timed out
+  --count N            Process only N files (0 = unlimited)
+
 When moving files, the command will:
   - Keep the duplicate file that is in the folder with the highest number of unique files
   - Move all other duplicate copies to the destination folder while preserving the folder structure
@@ -190,12 +199,14 @@ Examples:
   deduplicator files find
   deduplicator files list-dupes --count 10
   deduplicator files list-dupes --min-size 1G
-  deduplicator files list-dupes --dest /backup/dupes --run`,
+  deduplicator files list-dupes --dest /backup/dupes --run
+  deduplicator files hash --force`,
 		Examples: []string{
 			"deduplicator files find",
 			"deduplicator files list-dupes --count 10",
 			"deduplicator files list-dupes --min-size 1G",
 			"deduplicator files list-dupes --dest /backup/dupes --run",
+			"deduplicator files hash --force",
 		},
 	},
 }

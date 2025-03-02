@@ -31,27 +31,55 @@ The deduplicator tool provides several commands to help you manage duplicate fil
 
 ### Commands
 
-- `createdb`: Initialize or recreate the database tables
+- `migrate`: Run database migrations
+  - Subcommands:
+    - `up`: Apply all pending migrations
+    - `down`: Roll back the last applied migration
+    - `reset`: Drop all tables and reapply migrations
+    - `status`: Show current migration status
+
+- `createdb`: Initialize or recreate the database schema (deprecated, use `migrate up` instead)
   - Options:
     - `--force`: Force recreation of existing tables
 
-- `update`: Process file information from standard input
+- `update`: Process file paths from stdin and update the database
   - Use this to add new files to the database for duplicate checking
 
-- `hash`: Calculate and store file hashes
-  - Options:
-    - `--force`: Force rehash of all files
-    - `--count <n>`: Process only n files (0 for all files)
-
-- `list`: Display duplicate files found in the database
-  - Options:
-    - `--host <hostname>`: Check duplicates for a specific host
-    - `--all-hosts`: Check duplicates across all hosts (default: current host only)
-
 - `prune`: Remove entries for files that no longer exist on the filesystem
+
+- `organize`: Organize duplicate files by moving them
   - Options:
-    - `--host <hostname>`: Prune files from a specific host
-    - `--all-hosts`: Prune files across all hosts (default: current host only)
+    - `--run`: Actually move files (default is dry-run)
+    - `--move DIR`: Move duplicates to this directory
+    - `--strip-prefix PREFIX`: Remove prefix from paths when moving
+
+- `manage`: Manage backup hosts (add/edit/delete/list)
+  - Subcommands:
+    - `list`: List all registered hosts
+    - `add`: Add a new host
+    - `edit`: Edit an existing host
+    - `delete`: Remove a host
+
+- `files`: File-related commands for finding and managing files
+  - Subcommands:
+    - `find`: Find files for a specific host
+    - `list-dupes`: List duplicate files and optionally move them to a destination directory
+    - `move-dupes`: Move duplicate files to a target directory
+    - `hash`: Calculate and update file hashes in the database
+
+  - Options for `files list-dupes`:
+    - `--count N`: Limit output to N duplicate groups (0 = unlimited)
+    - `--min-size SIZE`: Minimum file size to consider (e.g., "1M", "1.5G", "500K")
+    - `--dest DIR`: Directory to move duplicates to (if specified)
+    - `--run`: Actually move files (default is dry-run)
+    - `--strip-prefix PREFIX`: Remove prefix from paths when moving
+    - `--ignore-dest`: Ignore files already in destination (default: true)
+
+  - Options for `files hash`:
+    - `--force`: Rehash files even if they already have a hash
+    - `--renew`: Recalculate hashes older than 1 week
+    - `--retry-problematic`: Retry files that previously timed out
+    - `--count N`: Process only N files (0 = unlimited)
 
 ## Configuration
 
@@ -63,6 +91,12 @@ DB_PORT=5432          # PostgreSQL port (default: 5432)
 DB_USER=postgres      # PostgreSQL user (default: postgres)
 DB_NAME=deduplicator  # Database name (default: deduplicator)
 DB_PASSWORD=          # PostgreSQL password (required)
+RABBITMQ_HOST=        # RabbitMQ host (optional)
+RABBITMQ_PORT=5672    # RabbitMQ port (default: 5672)
+RABBITMQ_VHOST=       # RabbitMQ vhost
+RABBITMQ_USER=        # RabbitMQ username
+RABBITMQ_PASSWORD=    # RabbitMQ password
+RABBITMQ_QUEUE=dedup_backup  # RabbitMQ queue name (default: dedup_backup)
 ```
 
 ## How It Works
@@ -70,17 +104,20 @@ DB_PASSWORD=          # PostgreSQL password (required)
 The tool uses a PostgreSQL database to store file information and their hashes. It implements a locking mechanism to prevent concurrent modifications to the database during critical operations.
 
 Typical workflow:
-1. Run `createdb` to initialize the database
-2. Use `update` to add files to the database
-3. Run `hash` to calculate file hashes
-4. Use `list` to find duplicates
-5. Periodically use `prune` to clean up entries for deleted files
+1. Run `migrate up` to initialize the database
+2. Use `manage add` to add hosts to the database
+3. Use `update` to add files to the database
+4. Run `files hash` to calculate file hashes
+5. Use `files list-dupes` to find duplicates
+6. Optionally use `files list-dupes --dest DIR --run` to move duplicate files
+7. Periodically use `prune` to clean up entries for deleted files
 
 ## Notes
 
 - The tool uses file locking to prevent concurrent modifications
-- Each command that modifies the database (`createdb`, `update`, `hash`, `prune`) acquires an exclusive lock
+- Each command that modifies the database acquires an exclusive lock
 - The `.env` file is optional but recommended for database configuration
+- When moving duplicate files, the tool keeps the file in the directory with the most unique files
 
 ## Examples
 
@@ -89,10 +126,28 @@ Here's how to use each command:
 ### Initialize the Database
 ```bash
 # Create database tables
-deduplicator createdb
+deduplicator migrate up
 
-# Force recreate tables (warning: this will delete existing data)
-deduplicator createdb --force
+# Roll back the last migration
+deduplicator migrate down
+
+# Show migration status
+deduplicator migrate status
+```
+
+### Manage Hosts
+```bash
+# List all hosts
+deduplicator manage list
+
+# Add a new host
+deduplicator manage add myhost example.com 192.168.1.100 /data
+
+# Edit an existing host
+deduplicator manage edit myhost newhost.com 192.168.1.101 /backup
+
+# Delete a host
+deduplicator manage delete myhost
 ```
 
 ### Add Files to Database
@@ -110,35 +165,50 @@ find . -type f -name "*.jpg" -o -name "*.png" | deduplicator update
 ### Calculate File Hashes
 ```bash
 # Hash all files in database
-deduplicator hash
+deduplicator files hash
 
 # Force rehash all files
-deduplicator hash --force
+deduplicator files hash --force
 
-# Hash only the first 100 unhashed files
-deduplicator hash --count 100
+# Recalculate hashes older than 1 week
+deduplicator files hash --renew
+
+# Retry files that previously timed out
+deduplicator files hash --retry-problematic
 ```
 
 ### Find Duplicates
 ```bash
-# List duplicate files on current host
-deduplicator list
+# List duplicate files
+deduplicator files list-dupes
 
-# List duplicate files on a specific host
-deduplicator list --host server1
+# List top 10 duplicate groups by size
+deduplicator files list-dupes --count 10
 
-# List duplicate files across all hosts
-deduplicator list --all-hosts
+# List duplicates larger than 1GB
+deduplicator files list-dupes --min-size 1G
+
+# Move duplicate files to a destination directory
+deduplicator files list-dupes --dest /backup/dupes --run
+
+# Move duplicates with path prefix stripping
+deduplicator files list-dupes --dest /backup/dupes --strip-prefix /data --run
 ```
 
 ### Clean Up Database
 ```bash
-# Remove entries for non-existent files on current host
+# Remove entries for non-existent files
 deduplicator prune
+```
 
-# Remove entries for non-existent files on a specific host
-deduplicator prune --host server1
+### Organize Files
+```bash
+# Show what would be organized (dry run)
+deduplicator organize --move /backup/dupes
 
-# Remove entries for non-existent files across all hosts
-deduplicator prune --all-hosts
+# Actually move files
+deduplicator organize --move /backup/dupes --run
+
+# Strip prefix from paths when moving
+deduplicator organize --move /backup/dupes --strip-prefix /data --run
 ```

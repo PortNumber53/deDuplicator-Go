@@ -19,7 +19,7 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 			ShowCommandHelp(*cmd)
 			return nil
 		}
-		return fmt.Errorf("files command requires a subcommand: find, list-dupes, or move-dupes")
+		return fmt.Errorf("files command requires a subcommand: find, list-dupes, move-dupes, or hash")
 	}
 
 	switch args[0] {
@@ -59,6 +59,49 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 
 		return files.FindFiles(ctx, database, files.FindOptions{
 			Host: hostName,
+		})
+
+	case "hash":
+		// Parse hash command flags
+		hashCmd := flag.NewFlagSet("hash", flag.ExitOnError)
+		force := hashCmd.Bool("force", false, "Rehash files even if they already have a hash")
+		renew := hashCmd.Bool("renew", false, "Recalculate hashes older than 1 week")
+		retryProblematic := hashCmd.Bool("retry-problematic", false, "Retry files that previously timed out")
+		// count parameter is defined but not used in the HashFiles function
+		_ = hashCmd.Int("count", 0, "Process only N files (0 = unlimited)")
+
+		if err := hashCmd.Parse(args[1:]); err != nil {
+			return fmt.Errorf("error parsing hash command flags: %v", err)
+		}
+
+		// Get hostname for current machine
+		hostname, err := os.Hostname()
+		if err != nil {
+			return fmt.Errorf("error getting hostname: %v", err)
+		}
+
+		// Convert hostname to lowercase for consistency
+		hostname = strings.ToLower(hostname)
+
+		// Find host in database by hostname (case-insensitive)
+		var hostName string
+		err = database.QueryRow(`
+			SELECT name 
+			FROM hosts 
+			WHERE LOWER(hostname) = LOWER($1)
+		`, hostname).Scan(&hostName)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return fmt.Errorf("no host found for hostname %s, please add it using 'deduplicator manage add'", hostname)
+			}
+			return fmt.Errorf("error finding host: %v", err)
+		}
+
+		return files.HashFiles(ctx, database, files.HashOptions{
+			Host:             hostName,
+			Refresh:          *force,
+			Renew:            *renew,
+			RetryProblematic: *retryProblematic,
 		})
 
 	case "list-dupes":
