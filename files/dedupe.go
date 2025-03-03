@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -99,7 +100,7 @@ func DedupFiles(ctx context.Context, db *sql.DB, opts DedupeOptions) error {
 
 		// Process the group for deduplication if not in dry run mode
 		if !opts.DryRun {
-			if err := deduplicateGroup(group, rootPath, opts); err != nil {
+			if err := deduplicateGroup(group, rootPath, opts, db); err != nil {
 				return fmt.Errorf("error deduplicating group with hash %s: %v", group.Hash, err)
 			}
 		}
@@ -119,7 +120,7 @@ func DedupFiles(ctx context.Context, db *sql.DB, opts DedupeOptions) error {
 }
 
 // deduplicateGroup handles the deduplication of a single group of duplicate files
-func deduplicateGroup(group DuplicateGroup, rootPath string, opts DedupeOptions) error {
+func deduplicateGroup(group DuplicateGroup, rootPath string, opts DedupeOptions, db *sql.DB) error {
 	if len(group.Files) < 2 {
 		return nil // Nothing to deduplicate
 	}
@@ -205,9 +206,33 @@ func deduplicateGroup(group DuplicateGroup, rootPath string, opts DedupeOptions)
 			return fmt.Errorf("error creating directory %s: %v", targetDir, err)
 		}
 
-		// Move the file
-		if err := os.Rename(sourcePath, targetPath); err != nil {
-			return fmt.Errorf("error moving file %s: %v", sourcePath, err)
+		// Move the file using rsync to handle cross-filesystem moves
+		// First try with os.Rename for efficiency (same filesystem)
+		err := os.Rename(sourcePath, targetPath)
+		if err != nil {
+			// If rename fails due to cross-device link, use rsync
+			if strings.Contains(err.Error(), "invalid cross-device link") {
+				// Use rsync to copy the file
+				cmd := exec.Command("rsync", "-a", "--remove-source-files", sourcePath, targetPath)
+				output, err := cmd.CombinedOutput()
+				if err != nil {
+					return fmt.Errorf("error moving file %s with rsync: %v\nOutput: %s", sourcePath, err, output)
+				}
+			} else {
+				// If it's another error, return it
+				return fmt.Errorf("error moving file %s: %v", sourcePath, err)
+			}
+		}
+
+		// Delete the file from the database
+		_, err = db.Exec(`
+			DELETE FROM files
+			WHERE path = $1 AND host_id = (
+				SELECT id FROM hosts WHERE LOWER(hostname) = LOWER($2)
+			)
+		`, files[i].path, files[i].host)
+		if err != nil {
+			log.Printf("Warning: Failed to delete file %s from database: %v", files[i].path, err)
 		}
 	}
 

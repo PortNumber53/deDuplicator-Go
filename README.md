@@ -62,6 +62,13 @@ The deduplicator tool provides several commands to help you manage duplicate fil
         - `--renew`: Recalculate hashes older than 1 week
         - `--retry-problematic`: Retry files that previously timed out
         - `--count N`: Process only N files (0 = unlimited)
+    - `import`: Import files from a source directory to a target host
+      - Options:
+        - `--source DIR`: Source directory to import files from (required)
+        - `--host NAME`: Target host to import files to (required)
+        - `--remove-source`: Remove source files after successful import
+        - `--dry-run`: Show what would be imported without making changes
+        - `--count N`: Limit the number of files to process (0 = no limit)
 
 - `manage`: Manage backup hosts (add/edit/delete/list)
   - Subcommands:
@@ -200,4 +207,19 @@ deduplicator files move-dupes --target /backup/dupes
 
 # Only consider files larger than 1MB
 deduplicator files move-dupes --target /backup/dupes --min-size 1M
+```
+
+### Import Files to a Remote Host
+```bash
+# Show what would be imported (dry run)
+deduplicator files import --source /path/to/files --host myhost --dry-run
+
+# Actually import files
+deduplicator files import --source /path/to/files --host myhost
+
+# Import files and remove source files after successful import
+deduplicator files import --source /path/to/files --host myhost --remove-source
+
+# Import only the first 10 files
+deduplicator files import --source /path/to/files --host myhost --count 10
 ```

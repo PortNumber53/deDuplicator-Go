@@ -278,6 +278,47 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 			DryRun:    *dryRun,
 		})
 
+	case "import":
+		// Check for help flag
+		for _, arg := range args[1:] {
+			if arg == "--help" || arg == "help" {
+				cmd := FindCommand("files import")
+				if cmd != nil {
+					ShowCommandHelp(*cmd)
+					return nil
+				}
+				break
+			}
+		}
+
+		// Parse command flags
+		cmd := flag.NewFlagSet(args[0], flag.ExitOnError)
+		source := cmd.String("source", "", "Source directory to import files from (required)")
+		host := cmd.String("host", "", "Target host to import files to (required)")
+		removeSource := cmd.Bool("remove-source", false, "Remove source files after successful import")
+		dryRun := cmd.Bool("dry-run", false, "Show what would be imported without making changes")
+		count := cmd.Int("count", 0, "Limit the number of files to process (0 = no limit)")
+
+		if err := cmd.Parse(args[1:]); err != nil {
+			return fmt.Errorf("error parsing command flags: %v", err)
+		}
+
+		if *source == "" {
+			return fmt.Errorf("--source is required for import command")
+		}
+
+		if *host == "" {
+			return fmt.Errorf("--host is required for import command")
+		}
+
+		return files.ImportFiles(ctx, database, files.ImportOptions{
+			SourcePath:   *source,
+			HostName:     *host,
+			RemoveSource: *removeSource,
+			DryRun:       *dryRun,
+			Count:        *count,
+		})
+
 	default:
 		return fmt.Errorf("unknown files subcommand: %s", args[0])
 	}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -110,7 +111,7 @@ func MoveDuplicates(ctx context.Context, db *sql.DB, opts DuplicateListOptions, 
 		if hash != currentHash {
 			// Process previous group
 			if currentHash != "" {
-				if err := moveGroupDuplicates(currentGroup, moveOpts); err != nil {
+				if err := moveGroupDuplicates(currentGroup, moveOpts, db); err != nil {
 					return fmt.Errorf("error moving duplicates for hash %s: %v", currentHash, err)
 				}
 				totalMoved += int64(len(currentGroup.Files) - 1)
@@ -141,7 +142,7 @@ func MoveDuplicates(ctx context.Context, db *sql.DB, opts DuplicateListOptions, 
 
 	// Process the last group
 	if currentHash != "" {
-		if err := moveGroupDuplicates(currentGroup, moveOpts); err != nil {
+		if err := moveGroupDuplicates(currentGroup, moveOpts, db); err != nil {
 			return fmt.Errorf("error moving duplicates for hash %s: %v", currentHash, err)
 		}
 		totalMoved += int64(len(currentGroup.Files) - 1)
@@ -167,7 +168,7 @@ func moveGroupDuplicates(group struct {
 	Hosts     []string
 	RootPaths []string
 	Size      int64
-}, opts MoveOptions) error {
+}, opts MoveOptions, db *sql.DB) error {
 	if len(group.Files) < 2 {
 		return nil // Nothing to move
 	}
@@ -254,9 +255,33 @@ func moveGroupDuplicates(group struct {
 				return fmt.Errorf("error creating directory %s: %v", targetDir, err)
 			}
 
-			// Move the file
-			if err := os.Rename(sourcePath, targetPath); err != nil {
-				return fmt.Errorf("error moving file %s: %v", sourcePath, err)
+			// Move the file using rsync to handle cross-filesystem moves
+			// First try with os.Rename for efficiency (same filesystem)
+			err := os.Rename(sourcePath, targetPath)
+			if err != nil {
+				// If rename fails due to cross-device link, use rsync
+				if strings.Contains(err.Error(), "invalid cross-device link") {
+					// Use rsync to copy the file
+					cmd := exec.Command("rsync", "-a", "--remove-source-files", sourcePath, targetPath)
+					output, err := cmd.CombinedOutput()
+					if err != nil {
+						return fmt.Errorf("error moving file %s with rsync: %v\nOutput: %s", sourcePath, err, output)
+					}
+				} else {
+					// If it's another error, return it
+					return fmt.Errorf("error moving file %s: %v", sourcePath, err)
+				}
+			}
+
+			// Delete the file from the database
+			_, err = db.Exec(`
+				DELETE FROM files
+				WHERE path = $1 AND host_id = (
+					SELECT id FROM hosts WHERE LOWER(hostname) = LOWER($2)
+				)
+			`, files[i].path, files[i].host)
+			if err != nil {
+				log.Printf("Warning: Failed to delete file %s from database: %v", files[i].path, err)
 			}
 		}
 	}

@@ -149,8 +149,8 @@ Requires RabbitMQ environment variables to be set.`,
 	},
 	{
 		Name:        "files",
-		Description: "File-related commands (find, list-dupes, move-dupes, hash)",
-		Usage:       "files [find|list-dupes|move-dupes|hash] [options]",
+		Description: "File-related commands (find, list-dupes, move-dupes, hash, import)",
+		Usage:       "files [find|list-dupes|move-dupes|hash|import] [options]",
 		Help: `File-related commands for finding and managing files.
 
 Subcommands:
@@ -158,6 +158,7 @@ Subcommands:
   list-dupes - List duplicate files and optionally move them to a destination directory
   move-dupes - Move duplicate files to a target directory
   hash       - Calculate and update file hashes in the database
+  import     - Import files from a source directory to a target host
 
 Options for list-dupes:
   --count N           Limit output to N duplicate groups (0 = unlimited)
@@ -172,6 +173,13 @@ Options for hash:
   --renew              Recalculate hashes older than 1 week
   --retry-problematic  Retry files that previously timed out
   --count N            Process only N files (0 = unlimited)
+
+Options for import:
+  --source DIR         Source directory to import files from (required)
+  --host NAME          Target host to import files to (required)
+  --remove-source      Remove source files after successful import
+  --dry-run            Show what would be imported without making changes
+  --count N            Limit the number of files to process (0 = no limit)
 
 When moving files, the command will:
   - Keep the duplicate file that is in the folder with the highest number of unique files
@@ -189,6 +197,7 @@ Examples:
 			"deduplicator files list-dupes --min-size 1G",
 			"deduplicator files list-dupes --dest /backup/dupes --run",
 			"deduplicator files hash --force",
+			"deduplicator files import --source /path/to/files --host myhost",
 		},
 	},
 }

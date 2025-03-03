@@ -23,6 +23,15 @@ type DedupeOptions struct {
 	MinSize       int64  // Minimum file size to consider
 }
 
+// ImportOptions represents options for the import command
+type ImportOptions struct {
+	SourcePath   string // Source directory to import files from
+	HostName     string // Target hostname to import files to
+	RemoveSource bool   // If true, remove source files after successful import
+	DryRun       bool   // If true, only show what would be done without making changes
+	Count        int    // Limit the number of files to process (0 = no limit)
+}
+
 // MoveOptions represents options for moving duplicate files
 type MoveOptions struct {
 	TargetDir string // Directory to move duplicates to
