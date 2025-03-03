@@ -19,7 +19,7 @@ func HandleManage(dbConn *sql.DB, args []string) error {
 		return fmt.Errorf("manage command requires a subcommand: add, edit, delete, or list")
 	}
 
-	if args[0] == "help" {
+	if args[0] == "help" || args[0] == "--help" {
 		cmd := FindCommand("manage")
 		if cmd != nil {
 			ShowCommandHelp(*cmd)
@@ -28,6 +28,25 @@ func HandleManage(dbConn *sql.DB, args []string) error {
 	}
 
 	subcommand := args[0]
+
+	// Check for help flag in subcommands
+	if len(args) > 1 && (args[1] == "help" || args[1] == "--help") {
+		// Try to find combined command help first
+		combinedCmd := "manage " + subcommand
+		cmd := FindCommand(combinedCmd)
+		if cmd != nil {
+			ShowCommandHelp(*cmd)
+			return nil
+		}
+
+		// Fall back to main command help
+		cmd = FindCommand("manage")
+		if cmd != nil {
+			ShowCommandHelp(*cmd)
+			return nil
+		}
+	}
+
 	switch subcommand {
 	case "list":
 		hosts, err := db.ListHosts(dbConn)

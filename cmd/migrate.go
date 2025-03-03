@@ -19,10 +19,20 @@ func HandleMigrate(database *sql.DB, args []string) error {
 			ShowCommandHelp(*cmd)
 			return nil
 		}
-		return fmt.Errorf("migrate command requires a subcommand: up, down, or reset")
+		return nil
 	}
 
-	if args[0] == "help" {
+	// Check for help flag
+	if args[0] == "help" || args[0] == "--help" {
+		cmd := FindCommand("migrate")
+		if cmd != nil {
+			ShowCommandHelp(*cmd)
+			return nil
+		}
+	}
+
+	// Check for help flag in subcommands
+	if len(args) > 1 && (args[1] == "help" || args[1] == "--help") {
 		cmd := FindCommand("migrate")
 		if cmd != nil {
 			ShowCommandHelp(*cmd)

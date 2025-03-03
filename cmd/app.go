@@ -58,6 +58,36 @@ func (a *App) HandleCommand(ctx context.Context, args []string) error {
 		}
 	}
 
+	// Check for --help flag
+	for i, arg := range args {
+		if arg == "--help" && i > 0 {
+			// If it's the main command
+			if i == 1 {
+				command := FindCommand(args[1])
+				if command != nil {
+					ShowCommandHelp(*command)
+					return nil
+				}
+			} else if i > 1 {
+				// It's a subcommand, try to find the combined command
+				combinedCmd := args[1] + " " + args[2]
+				command := FindCommand(combinedCmd)
+				if command != nil {
+					ShowCommandHelp(*command)
+					return nil
+				} else {
+					// If combined command not found, show help for main command
+					command := FindCommand(args[1])
+					if command != nil {
+						ShowCommandHelp(*command)
+						return nil
+					}
+				}
+			}
+			break
+		}
+	}
+
 	// Initialize RabbitMQ if needed
 	if args[1] == "listen" || args[1] == "queue" {
 		if os.Getenv("RABBITMQ_HOST") != "" {

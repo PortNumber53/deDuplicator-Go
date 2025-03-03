@@ -13,7 +13,7 @@ import (
 
 // HandleFiles handles file-related commands
 func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
-	if len(args) == 0 || args[0] == "help" {
+	if len(args) == 0 || args[0] == "help" || args[0] == "--help" {
 		cmd := FindCommand("files")
 		if cmd != nil {
 			ShowCommandHelp(*cmd)
@@ -24,6 +24,18 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 
 	switch args[0] {
 	case "find":
+		// Check for help flag
+		for _, arg := range args[1:] {
+			if arg == "--help" || arg == "help" {
+				cmd := FindCommand("files find")
+				if cmd != nil {
+					ShowCommandHelp(*cmd)
+					return nil
+				}
+				break
+			}
+		}
+
 		// Parse find command flags
 		findCmd := flag.NewFlagSet("find", flag.ExitOnError)
 		findHost := findCmd.String("host", "", "Host to find files for (defaults to current host)")
@@ -62,6 +74,18 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 		})
 
 	case "hash":
+		// Check for help flag
+		for _, arg := range args[1:] {
+			if arg == "--help" || arg == "help" {
+				cmd := FindCommand("files hash")
+				if cmd != nil {
+					ShowCommandHelp(*cmd)
+					return nil
+				}
+				break
+			}
+		}
+
 		// Parse hash command flags
 		hashCmd := flag.NewFlagSet("hash", flag.ExitOnError)
 		force := hashCmd.Bool("force", false, "Rehash files even if they already have a hash")
@@ -105,6 +129,18 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 		})
 
 	case "list-dupes":
+		// Check for help flag
+		for _, arg := range args[1:] {
+			if arg == "--help" || arg == "help" {
+				cmd := FindCommand("files list-dupes")
+				if cmd != nil {
+					ShowCommandHelp(*cmd)
+					return nil
+				}
+				break
+			}
+		}
+
 		// Parse command flags
 		cmd := flag.NewFlagSet(args[0], flag.ExitOnError)
 		count := cmd.Int("count", 0, "Limit the number of duplicate groups to show (0 = no limit)")
@@ -174,6 +210,18 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 		}
 
 	case "move-dupes":
+		// Check for help flag
+		for _, arg := range args[1:] {
+			if arg == "--help" || arg == "help" {
+				cmd := FindCommand("files move-dupes")
+				if cmd != nil {
+					ShowCommandHelp(*cmd)
+					return nil
+				}
+				break
+			}
+		}
+
 		// Parse command flags
 		cmd := flag.NewFlagSet(args[0], flag.ExitOnError)
 		count := cmd.Int("count", 0, "Limit the number of duplicate groups to show (0 = no limit)")
