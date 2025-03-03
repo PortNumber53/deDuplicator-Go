@@ -23,13 +23,6 @@ type DedupeOptions struct {
 	MinSize       int64  // Minimum file size to consider
 }
 
-// OrganizeOptions represents options for organizing duplicate files
-type OrganizeOptions struct {
-	DryRun          bool   // If true, only show what would be done without making changes
-	ConflictMoveDir string // If set, move conflicting files to this directory preserving structure
-	StripPrefix     string // Remove this prefix from paths when moving files
-}
-
 // MoveOptions represents options for moving duplicate files
 type MoveOptions struct {
 	TargetDir string // Directory to move duplicates to

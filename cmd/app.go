@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"database/sql"
-	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -170,23 +169,6 @@ func (a *App) HandleCommand(ctx context.Context, args []string) error {
 		}
 
 		return files.ListProblematicFiles(ctx, a.db, hostName)
-	case "organize":
-		// Parse organize command flags
-		flags := CreateFlagSets(a.version)
-		organizeCmd := flags["organize"]
-		if err := organizeCmd.Parse(args[2:]); err != nil {
-			return fmt.Errorf("error parsing organize command flags: %v", err)
-		}
-
-		runFlag := organizeCmd.Lookup("run")
-		moveFlag := organizeCmd.Lookup("move")
-		stripPrefixFlag := organizeCmd.Lookup("strip-prefix")
-
-		return files.OrganizeDuplicates(ctx, a.db, files.OrganizeOptions{
-			DryRun:          runFlag == nil || !runFlag.Value.(flag.Getter).Get().(bool),
-			ConflictMoveDir: moveFlag.Value.String(),
-			StripPrefix:     stripPrefixFlag.Value.String(),
-		})
 	case "manage":
 		return HandleManage(a.db, args[2:])
 	case "files":

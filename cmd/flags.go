@@ -26,14 +26,6 @@ func CreateFlagSets(version string) map[string]*flag.FlagSet {
 	scanCmd.Bool("verbose", false, "Verbose output")
 	flagSets["scan"] = scanCmd
 
-	// Organize command flags
-	organizeCmd := flag.NewFlagSet("organize", flag.ContinueOnError)
-	organizeCmd.Bool("help", false, "Show help for organize command")
-	organizeCmd.Bool("run", false, "Actually move files (without this flag, it's a dry run)")
-	organizeCmd.String("move", "", "Directory to move conflicting files to")
-	organizeCmd.String("strip-prefix", "", "Strip this prefix from paths when organizing")
-	flagSets["organize"] = organizeCmd
-
 	// Files command flags
 	filesCmd := flag.NewFlagSet("files", flag.ContinueOnError)
 	filesCmd.Bool("help", false, "Show help for files command")
@@ -53,9 +45,8 @@ func CreateFlagSets(version string) map[string]*flag.FlagSet {
 	// Files move-dupes command flags
 	filesMoveCmd := flag.NewFlagSet("files-move-dupes", flag.ContinueOnError)
 	filesMoveCmd.Bool("help", false, "Show help for files move-dupes command")
-	filesMoveCmd.String("dest", "", "Directory to move duplicate files to")
-	filesMoveCmd.Bool("run", false, "Actually move files (without this flag, it's a dry run)")
-	filesMoveCmd.String("strip-prefix", "", "Strip this prefix from paths when moving")
+	filesMoveCmd.String("target", "", "Target directory to move duplicates to (required)")
+	filesMoveCmd.Bool("dry-run", false, "Show what would be moved without making changes")
 	flagSets["files-move-dupes"] = filesMoveCmd
 
 	// Files hash command flags

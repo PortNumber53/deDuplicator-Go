@@ -47,11 +47,21 @@ The deduplicator tool provides several commands to help you manage duplicate fil
 
 - `prune`: Remove entries for files that no longer exist on the filesystem
 
-- `organize`: Organize duplicate files by moving them
-  - Options:
-    - `--run`: Actually move files (default is dry-run)
-    - `--move DIR`: Move duplicates to this directory
-    - `--strip-prefix PREFIX`: Remove prefix from paths when moving
+- `files`: File-related commands
+  - Subcommands:
+    - `find`: Find files for a specific host
+    - `list-dupes`: List duplicate files
+    - `move-dupes`: Move duplicate files to a target directory
+      - Options:
+        - `--target DIR`: Target directory to move duplicates to (required)
+        - `--dry-run`: Show what would be moved without making changes (default)
+        - `--min-size SIZE`: Minimum file size to consider (e.g., "1M", "1.5G", "500K")
+    - `hash`: Calculate and update file hashes in the database
+      - Options:
+        - `--force`: Rehash files even if they already have a hash
+        - `--renew`: Recalculate hashes older than 1 week
+        - `--retry-problematic`: Retry files that previously timed out
+        - `--count N`: Process only N files (0 = unlimited)
 
 - `manage`: Manage backup hosts (add/edit/delete/list)
   - Subcommands:
@@ -59,27 +69,6 @@ The deduplicator tool provides several commands to help you manage duplicate fil
     - `add`: Add a new host
     - `edit`: Edit an existing host
     - `delete`: Remove a host
-
-- `files`: File-related commands for finding and managing files
-  - Subcommands:
-    - `find`: Find files for a specific host
-    - `list-dupes`: List duplicate files and optionally move them to a destination directory
-    - `move-dupes`: Move duplicate files to a target directory
-    - `hash`: Calculate and update file hashes in the database
-
-  - Options for `files list-dupes`:
-    - `--count N`: Limit output to N duplicate groups (0 = unlimited)
-    - `--min-size SIZE`: Minimum file size to consider (e.g., "1M", "1.5G", "500K")
-    - `--dest DIR`: Directory to move duplicates to (if specified)
-    - `--run`: Actually move files (default is dry-run)
-    - `--strip-prefix PREFIX`: Remove prefix from paths when moving
-    - `--ignore-dest`: Ignore files already in destination (default: true)
-
-  - Options for `files hash`:
-    - `--force`: Rehash files even if they already have a hash
-    - `--renew`: Recalculate hashes older than 1 week
-    - `--retry-problematic`: Retry files that previously timed out
-    - `--count N`: Process only N files (0 = unlimited)
 
 ## Configuration
 
@@ -201,14 +190,14 @@ deduplicator files list-dupes --dest /backup/dupes --strip-prefix /data --run
 deduplicator prune
 ```
 
-### Organize Files
+### Move Duplicate Files
 ```bash
-# Show what would be organized (dry run)
-deduplicator organize --move /backup/dupes
+# Show what would be moved (dry run)
+deduplicator files move-dupes --target /backup/dupes --dry-run
 
 # Actually move files
-deduplicator organize --move /backup/dupes --run
+deduplicator files move-dupes --target /backup/dupes
 
-# Strip prefix from paths when moving
-deduplicator organize --move /backup/dupes --strip-prefix /data --run
+# Only consider files larger than 1MB
+deduplicator files move-dupes --target /backup/dupes --min-size 1M
 ```

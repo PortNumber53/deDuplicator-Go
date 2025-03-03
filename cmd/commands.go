@@ -124,24 +124,6 @@ This command helps keep the database in sync with the actual filesystem.`,
 		},
 	},
 	{
-		Name:        "organize",
-		Description: "Organize duplicate files by moving them",
-		Usage:       "organize [--run] [--move DIR] [--strip-prefix PREFIX]",
-		Help: `Organize duplicate files by moving them to a new location.
-
-Options:
-  --run               Actually move files (default is dry-run)
-  --move DIR          Move duplicates to this directory
-  --strip-prefix PREFIX  Remove prefix from paths when moving
-
-By default, this runs in dry-run mode and only shows what would be done.`,
-		Examples: []string{
-			"deduplicator organize --move /backup/dupes",
-			"deduplicator organize --run",
-			"deduplicator organize --strip-prefix /data",
-		},
-	},
-	{
 		Name:        "listen",
 		Description: "Listen for version update messages from RabbitMQ",
 		Usage:       "listen",
