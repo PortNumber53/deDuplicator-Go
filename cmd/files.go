@@ -13,7 +13,6 @@ import (
 
 // HandleFiles handles file-related commands
 func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
-	fmt.Printf("DEBUG: HandleFiles called with args: %v\n", args)
 	var err error
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" {
 		cmd := FindCommand("files")
@@ -21,17 +20,7 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 			ShowCommandHelp(*cmd)
 			return nil
 		}
-		return fmt.Errorf(`files - Manage file operations
-
-Subcommands:
-  import      Import files into the database
-  find        Find files in the database
-  hash        Hash files and store the hashes
-  list-dupes List duplicate files
-  move-dupes Move duplicate files
-  prune      Remove non-existent files from database
-
-Use "files <subcommand> --help" for more information about a subcommand.`)
+		return fmt.Errorf("files command requires a subcommand: find, list-dupes, move-dupes, hash, prune, or import")
 	}
 
 	switch args[0] {

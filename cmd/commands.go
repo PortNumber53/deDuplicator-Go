@@ -198,7 +198,7 @@ Use 'files <subcommand> --help' for more information on a specific subcommand.`,
 			"deduplicator files move-dupes --target /backup/dupes --dry-run",
 			"deduplicator files hash --force",
 			"deduplicator files prune",
-			"deduplicator files import --source /path/to/files --server myhost",
+			"deduplicator files import --source /path/to/files --server myhost --path Photos",
 		},
 	},
 	{
@@ -230,7 +230,7 @@ This command helps keep the database in sync with the actual filesystem.`,
 	{
 		Name:        "files import",
 		Description: "Import files from a source directory to a target host",
-		Usage:       "files import --source DIR --server NAME [options]",
+		Usage:       "files import --source DIR --server NAME --path PATH [options]",
 		Help: `Import files from a source directory to a target host.
 
 The command transfers files using rsync and adds them to the database.
@@ -243,11 +243,12 @@ Options:
   --duplicate DIR    Move duplicate files to this directory instead of skipping
   --remove-source     Remove source files after successful import
   --dry-run          Show what would be imported without making changes
-  --count N          Limit the number of files to process (0 = no limit, default: 0)`,
+  --count N          Limit the number of files to process (0 = no limit, default: 0)
+  --age MINUTES      Only import files older than this many minutes`,
 		Examples: []string{
-			"deduplicator files import --source /path/to/files --server myhost",
-			"deduplicator files import --source /path/to/files --server myhost --remove-source",
-			"deduplicator files import --source /path/to/files --server myhost --dry-run",
+			"deduplicator files import --source /path/to/files --server myhost --path Photos",
+			"deduplicator files import --source /path/to/files --server myhost --path Photos --remove-source",
+			"deduplicator files import --source /path/to/files --server myhost --path Photos --dry-run",
 		},
 	},
 	{

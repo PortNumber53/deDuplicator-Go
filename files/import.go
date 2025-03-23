@@ -106,13 +106,13 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 
 	// Walk through the source directory
 	var (
-		transferCount     int
-		transferTotalSize int64 // Total size of transferred files
-		skipCount         int
-		skipTotalSize     int64 // Total size of skipped files
-		errorCount        int
-		fileCount         int
-		removedCount      int   // Track number of files removed from source
+		transferCount       int
+		transferTotalSize   int64 // Total size of transferred files
+		skipCount           int
+		skipTotalSize       int64 // Total size of skipped files
+		errorCount          int
+		fileCount           int
+		removedCount        int   // Track number of files removed from source
 		moveCount           int   // Track number of files moved to duplicate dir
 		moveTotalSize       int64 // Total size of files moved to duplicate dir
 		skipTooNewCount     int   // Track number of files skipped because they are too new
@@ -272,7 +272,7 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 				SELECT COUNT(*)
 				FROM files
 				WHERE hash = $1 AND hostname = $2
-			`, hash, opts.HostName).Scan(&existingCount)
+			`, hash, dbHostName).Scan(&existingCount)
 			if err != nil {
 				fmt.Printf("Error querying database for hash %s: %v\n", hash, err)
 				errorCount++
@@ -280,8 +280,45 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 			}
 
 			if existingCount > 0 {
-				fmt.Printf("Skipping %s (hash already exists on target host)\n", path)
+				if opts.DuplicateDir != "" {
+					duplicatePath := filepath.Join(opts.DuplicateDir, relPath)
+					duplicateDir := filepath.Dir(duplicatePath)
+
+					if opts.DryRun {
+						fmt.Printf("Would move duplicate %s to %s\n", path, duplicatePath)
+					} else {
+						if err := os.MkdirAll(duplicateDir, 0755); err != nil {
+							fmt.Printf("Error creating duplicate directory %s: %v\n", duplicateDir, err)
+							errorCount++
+							return nil
+						}
+
+						fmt.Printf("Moving duplicate %s (%s) to %s\n", path, formatSize(info.Size()), duplicatePath)
+						if err := os.Rename(path, duplicatePath); err != nil {
+							if strings.Contains(err.Error(), "invalid cross-device link") {
+								cmd := exec.Command("rsync", "-a", "--remove-source-files", path, duplicatePath)
+								output, rsyncErr := cmd.CombinedOutput()
+								if rsyncErr != nil {
+									fmt.Printf("Error moving duplicate file %s with rsync: %v\nOutput: %s\n", path, rsyncErr, output)
+									errorCount++
+									return nil
+								}
+							} else {
+								fmt.Printf("Error moving duplicate file %s: %v\n", path, err)
+								errorCount++
+								return nil
+							}
+						}
+
+						moveCount++
+						moveTotalSize += info.Size()
+					}
+					return nil
+				}
+
+				fmt.Printf("SKIP (hash exists on target host): %s\n", path)
 				skipCount++
+				skipTotalSize += info.Size()
 				return nil
 			}
 
