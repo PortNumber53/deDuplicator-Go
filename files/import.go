@@ -100,7 +100,7 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 		err = database.QueryRow(`
 			SELECT COUNT(*)
 			FROM files
-			WHERE hash = $1 AND host_id = (SELECT id FROM hosts WHERE name = $2)
+			WHERE hash = $1 AND hostname = $2
 		`, hash, opts.HostName).Scan(&existingCount)
 		if err != nil {
 			fmt.Printf("Error querying database for hash %s: %v\n", hash, err)
@@ -126,8 +126,21 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 		targetPath := filepath.Join(rootPath, relPath)
 
 		if !opts.DryRun {
-			// Use rsync to transfer the file
-			rsyncCmd := exec.CommandContext(ctx, "rsync", "-avz", "--mkpath", path, name+":"+targetPath)
+			// Create target directory structure first
+			targetDir := filepath.Dir(targetPath)
+			mkdirCmd := exec.CommandContext(ctx, "ssh", name, "mkdir", "-p", targetDir)
+			if err := mkdirCmd.Run(); err != nil {
+				fmt.Printf("Error creating directory %s: %v\n", targetDir, err)
+				errorCount++
+				return nil
+			}
+
+			// Use rsync to transfer the file (without --mkpath which isn't supported in older rsync)
+			rsyncArgs := []string{"-avz", path, name+":"+targetPath}
+			if opts.RemoveSource {
+				rsyncArgs = append([]string{"-avz", "--remove-source-files"}, path, name+":"+targetPath)
+			}
+			rsyncCmd := exec.CommandContext(ctx, "rsync", rsyncArgs...)
 			fmt.Printf("Transferring %s to %s:%s\n", path, name, targetPath)
 
 			output, err := rsyncCmd.CombinedOutput()
@@ -139,25 +152,15 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 
 			// Add file to database
 			_, err = database.Exec(`
-				INSERT INTO files (path, size, hash, host_id, last_seen)
-				VALUES ($1, $2, $3, (SELECT id FROM hosts WHERE name = $4), NOW())
-				ON CONFLICT (path, host_id) DO UPDATE
-				SET size = $2, hash = $3, last_seen = NOW()
+				INSERT INTO files (path, size, hash, hostname)
+				VALUES ($1, $2, $3, $4)
+				ON CONFLICT (path, hostname) DO UPDATE
+				SET size = $2, hash = $3
 			`, targetPath, info.Size(), hash, opts.HostName)
 			if err != nil {
 				fmt.Printf("Error adding file to database: %v\n", err)
 				errorCount++
 				return nil
-			}
-
-			// Remove source file if requested
-			if opts.RemoveSource {
-				if err := os.Remove(path); err != nil {
-					fmt.Printf("Error removing source file %s: %v\n", path, err)
-					errorCount++
-				} else {
-					fmt.Printf("Removed source file %s\n", path)
-				}
 			}
 		} else {
 			fmt.Printf("Would transfer %s to %s:%s\n", path, name, targetPath)

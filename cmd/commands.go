@@ -1,12 +1,5 @@
 package cmd
 
-import (
-	"context"
-	"database/sql"
-
-	"deduplicator/files"
-)
-
 // Command represents a subcommand with its description and usage
 type Command struct {
 	Name        string
@@ -113,17 +106,6 @@ Files are hashed using SHA256 for reliable duplicate detection.`,
 		},
 	},
 	{
-		Name:        "prune",
-		Description: "Remove entries for files that no longer exist",
-		Usage:       "prune",
-		Help: `Remove database entries for files that no longer exist on disk.
-
-This command helps keep the database in sync with the actual filesystem.`,
-		Examples: []string{
-			"deduplicator prune",
-		},
-	},
-	{
 		Name:        "listen",
 		Description: "Listen for version update messages from RabbitMQ",
 		Usage:       "listen",
@@ -149,55 +131,72 @@ Requires RabbitMQ environment variables to be set.`,
 	},
 	{
 		Name:        "files",
-		Description: "File-related commands (find, list-dupes, move-dupes, hash, import)",
-		Usage:       "files [find|list-dupes|move-dupes|hash|import] [options]",
-		Help: `File-related commands for finding and managing files.
+		Description: "Manage file operations (find, hashing, duplicate detection, pruning)",
+		Usage:       "files [find|list-dupes|move-dupes|hash|prune|import] [options]",
+		Help: `Manage file operations including finding, hashing, and duplicate detection.
 
 Subcommands:
-  find       - Find files for a specific host
-  list-dupes - List duplicate files and optionally move them to a destination directory
-  move-dupes - Move duplicate files to a target directory
-  hash       - Calculate and update file hashes in the database
-  import     - Import files from a source directory to a target host
+  find        - Search for files based on criteria
+  list-dupes  - List duplicate files
+  move-dupes  - Move duplicate files to a destination
+  hash        - Calculate and store file hashes
+  prune       - Remove entries for files that no longer exist
+  import      - Import files from another location
 
-Options for list-dupes:
-  --count N           Limit output to N duplicate groups (0 = unlimited)
-  --min-size SIZE     Minimum file size to consider (e.g., "1M", "1.5G", "500K")
-  --dest DIR          Directory to move duplicates to (if specified)
-  --run               Actually move files (default is dry-run)
-  --strip-prefix PREFIX  Remove prefix from paths when moving
-  --ignore-dest       Ignore files already in destination (default: true)
-
-Options for hash:
-  --force              Rehash files even if they already have a hash
-  --renew              Recalculate hashes older than 1 week
-  --retry-problematic  Retry files that previously timed out
-  --count N            Process only N files (0 = unlimited)
-
-Options for import:
-  --source DIR         Source directory to import files from (required)
-  --host NAME          Target host to import files to (required)
-  --remove-source      Remove source files after successful import
-  --dry-run            Show what would be imported without making changes
-  --count N            Limit the number of files to process (0 = no limit)
-
-When moving files, the command will:
-  - Keep the duplicate file that is in the folder with the highest number of unique files
-  - Move all other duplicate copies to the destination folder while preserving the folder structure
-
-Examples:
-  deduplicator files find
-  deduplicator files list-dupes --count 10
-  deduplicator files list-dupes --min-size 1G
-  deduplicator files list-dupes --dest /backup/dupes --run
-  deduplicator files hash --force`,
+Use 'files <subcommand> --help' for more information on a specific subcommand.`,
 		Examples: []string{
 			"deduplicator files find",
 			"deduplicator files list-dupes --count 10",
 			"deduplicator files list-dupes --min-size 1G",
 			"deduplicator files list-dupes --dest /backup/dupes --run",
 			"deduplicator files hash --force",
+			"deduplicator files prune",
 			"deduplicator files import --source /path/to/files --host myhost",
+		},
+	},
+	{
+		Name:        "files find",
+		Description: "Search for files based on criteria",
+		Usage:       "files find [--host HOSTNAME]",
+		Help: `Search for files in the database based on specified criteria.
+
+Options:
+  --host HOSTNAME  Host to find files for (defaults to current host)`,
+		Examples: []string{
+			"deduplicator files find",
+			"deduplicator files find --host myhost",
+		},
+	},
+	{
+		Name:        "files prune",
+		Description: "Remove entries for files that no longer exist",
+		Usage:       "files prune",
+		Help: `Remove database entries for files that no longer exist on disk.
+
+This command helps keep the database in sync with the actual filesystem.`,
+		Examples: []string{
+			"deduplicator files prune",
+		},
+	},
+	{
+		Name:        "files import",
+		Description: "Import files from a source directory to a target host",
+		Usage:       "files import --source DIR --host NAME [options]",
+		Help: `Import files from a source directory to a target host.
+
+The command transfers files using rsync and adds them to the database.
+Files that already exist on the target host (based on hash) will be skipped.
+
+Options:
+  --source DIR        Source directory to import files from (required)
+  --host NAME         Target host to import files to (required)
+  --remove-source     Remove source files after successful transfer (using rsync's --remove-source-files)
+  --dry-run           Show what would be imported without making changes
+  --count N           Limit the number of files to process (0 = no limit)`,
+		Examples: []string{
+			"deduplicator files import --source /path/to/files --host myhost",
+			"deduplicator files import --source /path/to/files --host myhost --remove-source",
+			"deduplicator files import --source /path/to/files --host myhost --dry-run",
 		},
 	},
 }
@@ -210,9 +209,4 @@ func FindCommand(name string) *Command {
 		}
 	}
 	return nil
-}
-
-func HandlePrune(ctx context.Context, db *sql.DB) error {
-	opts := files.PruneOptions{}
-	return files.PruneNonExistentFiles(ctx, db, opts)
 }

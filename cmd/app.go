@@ -140,9 +140,14 @@ func (a *App) HandleCommand(ctx context.Context, args []string) error {
 	// Acquire flow-specific lock before proceeding
 	var lockFile *lock.Lock
 	switch args[1] {
-	case "migrate", "createdb", "update", "hash", "prune":
+	case "migrate", "createdb", "update", "hash":
 		lockFile = lock.MustAcquire(args[1])
 		defer lockFile.Release()
+	case "files":
+		if len(args) > 2 && args[2] == "prune" {
+			lockFile = lock.MustAcquire("prune")
+			defer lockFile.Release()
+		}
 	}
 
 	// Connect to database
@@ -167,15 +172,6 @@ func (a *App) HandleCommand(ctx context.Context, args []string) error {
 		}
 
 		return files.ProcessStdin(ctx, a.db)
-	case "prune":
-		// Parse prune command flags
-		flags := CreateFlagSets(a.version)
-		pruneCmd := flags["prune"]
-		if err := pruneCmd.Parse(args[2:]); err != nil {
-			return fmt.Errorf("error parsing prune command flags: %v", err)
-		}
-
-		return files.PruneNonExistentFiles(ctx, a.db, files.PruneOptions{})
 	case "problematic":
 		hostname, err := os.Hostname()
 		if err != nil {
@@ -187,8 +183,8 @@ func (a *App) HandleCommand(ctx context.Context, args []string) error {
 
 		var hostName string
 		err = a.db.QueryRow(`
-			SELECT name 
-			FROM hosts 
+			SELECT name
+			FROM hosts
 			WHERE LOWER(hostname) = LOWER($1)
 		`, hostname).Scan(&hostName)
 		if err != nil {

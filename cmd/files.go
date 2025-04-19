@@ -19,7 +19,7 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 			ShowCommandHelp(*cmd)
 			return nil
 		}
-		return fmt.Errorf("files command requires a subcommand: find, list-dupes, move-dupes, or hash")
+		return fmt.Errorf("files command requires a subcommand: find, list-dupes, move-dupes, hash, prune, or import")
 	}
 
 	switch args[0] {
@@ -57,8 +57,8 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 
 			// Find host in database by hostname (case-insensitive)
 			err = database.QueryRow(`
-				SELECT name 
-				FROM hosts 
+				SELECT name
+				FROM hosts
 				WHERE LOWER(hostname) = LOWER($1)
 			`, hostname).Scan(&hostName)
 			if err != nil {
@@ -110,8 +110,8 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 		// Find host in database by hostname (case-insensitive)
 		var hostName string
 		err = database.QueryRow(`
-			SELECT name 
-			FROM hosts 
+			SELECT name
+			FROM hosts
 			WHERE LOWER(hostname) = LOWER($1)
 		`, hostname).Scan(&hostName)
 		if err != nil {
@@ -166,8 +166,8 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 		// Find host in database by hostname (case-insensitive)
 		var hostName string
 		err = database.QueryRow(`
-			SELECT name 
-			FROM hosts 
+			SELECT name
+			FROM hosts
 			WHERE LOWER(hostname) = LOWER($1)
 		`, hostname).Scan(&hostName)
 		if err != nil {
@@ -249,8 +249,8 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 		// Find host in database by hostname (case-insensitive)
 		var hostName string
 		err = database.QueryRow(`
-			SELECT name 
-			FROM hosts 
+			SELECT name
+			FROM hosts
 			WHERE LOWER(hostname) = LOWER($1)
 		`, hostname).Scan(&hostName)
 		if err != nil {
@@ -277,6 +277,27 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 			TargetDir: *target,
 			DryRun:    *dryRun,
 		})
+
+	case "prune":
+		// Check for help flag
+		for _, arg := range args[1:] {
+			if arg == "--help" || arg == "help" {
+				cmd := FindCommand("files prune")
+				if cmd != nil {
+					ShowCommandHelp(*cmd)
+					return nil
+				}
+				break
+			}
+		}
+
+		// Parse prune command flags
+		pruneCmd := flag.NewFlagSet("prune", flag.ExitOnError)
+		if err := pruneCmd.Parse(args[1:]); err != nil {
+			return fmt.Errorf("error parsing prune command flags: %v", err)
+		}
+
+		return files.PruneNonExistentFiles(ctx, database, files.PruneOptions{})
 
 	case "import":
 		// Check for help flag

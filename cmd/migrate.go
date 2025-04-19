@@ -2,11 +2,7 @@ package cmd
 
 import (
 	"database/sql"
-	"errors"
 	"fmt"
-
-	"github.com/golang-migrate/migrate"
-	"github.com/golang-migrate/migrate/database/postgres"
 
 	"deduplicator/db"
 )
@@ -49,31 +45,7 @@ func HandleMigrate(database *sql.DB, args []string) error {
 	case "reset":
 		return db.ResetDatabase(database)
 	case "status":
-		driver, err := postgres.WithInstance(database, &postgres.Config{})
-		if err != nil {
-			return fmt.Errorf("could not create database driver: %v", err)
-		}
-
-		m, err := migrate.NewWithDatabaseInstance(
-			"file://migrations",
-			"postgres",
-			driver,
-		)
-		if err != nil {
-			return fmt.Errorf("could not create migrate instance: %v", err)
-		}
-
-		version, dirty, err := m.Version()
-		if err != nil {
-			if errors.Is(err, migrate.ErrNilVersion) {
-				fmt.Println("No migrations have been applied")
-				return nil
-			}
-			return fmt.Errorf("could not get migration version: %v", err)
-		}
-
-		fmt.Printf("Current migration version: %d (dirty: %v)\n", version, dirty)
-		return nil
+		return db.StatusMigrations(database)
 	default:
 		return fmt.Errorf("unknown migrate subcommand: %s", subcommand)
 	}

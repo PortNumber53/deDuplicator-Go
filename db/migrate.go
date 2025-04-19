@@ -153,6 +153,62 @@ func RollbackLastMigration(db *sql.DB) error {
 	return nil
 }
 
+// StatusMigrations prints the status of all migrations (applied, pending, or missing)
+func StatusMigrations(db *sql.DB) error {
+	// List all .up.sql migration files
+	files, err := filepath.Glob("migrations/*.up.sql")
+	if err != nil {
+		return fmt.Errorf("error finding migration files: %v", err)
+	}
+
+	// Query all applied migrations from DB
+	rows, err := db.Query(`SELECT filename FROM migrations`)
+	if err != nil {
+		return fmt.Errorf("error querying migrations table: %v", err)
+	}
+	defer rows.Close()
+
+	applied := make(map[string]bool)
+	for rows.Next() {
+		var fname string
+		if err := rows.Scan(&fname); err != nil {
+			return fmt.Errorf("error scanning migration row: %v", err)
+		}
+		applied[fname] = true
+	}
+
+	fmt.Println("Migration Status:")
+	fmt.Println("------------------")
+	// Track which applied migrations are missing from code
+	appliedButMissing := make([]string, 0)
+	for fname := range applied {
+		found := false
+		for _, f := range files {
+			if filepath.Base(f) == fname {
+				found = true
+				break
+			}
+		}
+		if !found {
+			appliedButMissing = append(appliedButMissing, fname)
+		}
+	}
+
+	for _, file := range files {
+		base := filepath.Base(file)
+		if applied[base] {
+			fmt.Printf("[applied] %s\n", base)
+		} else {
+			fmt.Printf("[pending] %s\n", base)
+		}
+	}
+	for _, missing := range appliedButMissing {
+		fmt.Printf("[missing in code] %s\n", missing)
+	}
+
+	return nil
+}
+
 // ResetDatabase drops all tables and reapplies all migrations
 func ResetDatabase(db *sql.DB) error {
 	log.Println("Resetting database...")
