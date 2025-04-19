@@ -3,8 +3,8 @@ package files
 import (
 	"context"
 	"database/sql"
+	"deduplicator/logging"
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,7 +12,6 @@ import (
 	"strings"
 )
 
-// MoveDuplicates moves duplicate files to a target directory
 func MoveDuplicates(ctx context.Context, db *sql.DB, opts DuplicateListOptions, moveOpts MoveOptions) error {
 	// Create target directory if it doesn't exist
 	if !moveOpts.DryRun {
@@ -29,7 +28,7 @@ func MoveDuplicates(ctx context.Context, db *sql.DB, opts DuplicateListOptions, 
 
 	// Convert hostname to lowercase for consistency
 	hostname = strings.ToLower(hostname)
-	log.Printf("Looking up host for hostname: %s", hostname)
+	logging.InfoLogger.Printf("Looking up host for hostname: %s", hostname)
 
 	// Find host in database by hostname (case-insensitive)
 	var hostName string
@@ -44,12 +43,12 @@ func MoveDuplicates(ctx context.Context, db *sql.DB, opts DuplicateListOptions, 
 		}
 		return fmt.Errorf("error finding host: %v", err)
 	}
-	log.Printf("Found host: %s", hostName)
+	logging.InfoLogger.Printf("Found host: %s", hostName)
 
 	// Build query based on options
 	query := `
-		WITH duplicates AS (
-			SELECT hash, COUNT(*) as count, SUM(size) as total_size
+		WITH duplicate_hashes AS (
+			SELECT hash, SUM(size) as total_size
 			FROM files
 			WHERE hash IS NOT NULL
 			AND LOWER(hostname) = LOWER($1)
@@ -67,20 +66,21 @@ func MoveDuplicates(ctx context.Context, db *sql.DB, opts DuplicateListOptions, 
 	query += `
 			GROUP BY hash
 			HAVING COUNT(*) > 1
-		)
-		SELECT f.hash, f.path, f.hostname, f.size, h.root_path
-		FROM duplicates d
-		JOIN files f ON f.hash = d.hash
-		JOIN hosts h ON LOWER(h.hostname) = LOWER(f.hostname)
-		WHERE LOWER(f.hostname) = LOWER($1)
-		ORDER BY d.total_size DESC, d.hash, f.path
+			ORDER BY total_size DESC, hash
 	`
-
 	if opts.Count > 0 {
 		argCount++
 		query += fmt.Sprintf(" LIMIT $%d", argCount)
 		args = append(args, opts.Count)
 	}
+	query += `
+		)
+		SELECT f.hash, f.path, f.hostname, f.size, f.root_folder
+		FROM duplicate_hashes d
+		JOIN files f ON f.hash = d.hash
+		WHERE LOWER(f.hostname) = LOWER($1)
+		ORDER BY d.total_size DESC, d.hash, f.path
+	`
 
 	// Query duplicate groups
 	rows, err := db.QueryContext(ctx, query, args...)
@@ -142,6 +142,8 @@ func MoveDuplicates(ctx context.Context, db *sql.DB, opts DuplicateListOptions, 
 
 	// Process the last group
 	if currentHash != "" {
+		// Debug log for root paths
+		fmt.Printf("[DEBUG] Looping through these root paths: %v\n", currentGroup.RootPaths)
 		if err := moveGroupDuplicates(currentGroup, moveOpts, db); err != nil {
 			return fmt.Errorf("error moving duplicates for hash %s: %v", currentHash, err)
 		}
@@ -186,11 +188,12 @@ func moveGroupDuplicates(group struct {
 	for i, path := range group.Files {
 		// Construct full path by joining root path and relative path
 		fullPath := filepath.Join(group.RootPaths[i], path)
+		logging.InfoLogger.Printf("[DEBUG] Using rootPath: %s, path: %s, fullPath: %s", group.RootPaths[i], path, fullPath)
 		parentDir := filepath.Dir(fullPath)
 		entries, err := os.ReadDir(parentDir)
 		if err != nil {
 			// If directory doesn't exist, assign count of 0
-			log.Printf("Warning: Could not read directory %s: %v", parentDir, err)
+			logging.ErrorLogger.Printf("Warning: Could not read directory %s: %v", parentDir, err)
 			files[i] = fileInfo{
 				path:           path,
 				host:           group.Hosts[i],
@@ -231,11 +234,17 @@ func moveGroupDuplicates(group struct {
 
 	// Move all files except the last one (which is from the most populated directory)
 	for i := 0; i < len(files)-1; i++ {
-		sourcePath := filepath.Join(files[i].rootPath, files[i].path)
+		var sourcePath string
+		if filepath.IsAbs(files[i].path) {
+			sourcePath = files[i].path
+		} else {
+			sourcePath = filepath.Join(files[i].rootPath, files[i].path)
+		}
+		logging.InfoLogger.Printf("[DEBUG] Moving file. rootPath: %s, path: %s, sourcePath: %s", files[i].rootPath, files[i].path, sourcePath)
 
 		// Skip if source file doesn't exist
 		if _, err := os.Stat(sourcePath); os.IsNotExist(err) {
-			log.Printf("Warning: Source file does not exist: %s", sourcePath)
+			logging.ErrorLogger.Printf("Warning: Source file does not exist: %s", sourcePath)
 			continue
 		}
 
@@ -276,12 +285,10 @@ func moveGroupDuplicates(group struct {
 			// Delete the file from the database
 			_, err = db.Exec(`
 				DELETE FROM files
-				WHERE path = $1 AND host_id = (
-					SELECT id FROM hosts WHERE LOWER(hostname) = LOWER($2)
-				)
+				WHERE path = $1 AND LOWER(hostname) = LOWER($2)
 			`, files[i].path, files[i].host)
 			if err != nil {
-				log.Printf("Warning: Failed to delete file %s from database: %v", files[i].path, err)
+				logging.ErrorLogger.Printf("Warning: Failed to delete file %s from database: %v", files[i].path, err)
 			}
 		}
 	}
