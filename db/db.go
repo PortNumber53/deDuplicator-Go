@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"encoding/json"
+
 	_ "github.com/lib/pq"
 )
 
@@ -14,8 +16,40 @@ type Host struct {
 	Name      string
 	Hostname  string
 	IP        string
-	RootPath  string
+	RootPath  string          // deprecated, keep for now
+	Settings  json.RawMessage // stores paths and other settings as JSON
 	CreatedAt time.Time
+}
+
+type HostPaths struct {
+	Paths map[string]string `json:"paths"` // friendly name -> absolute path
+}
+
+// GetPaths returns the paths from the host's settings JSON
+func (h *Host) GetPaths() (map[string]string, error) {
+	if h.Settings == nil || len(h.Settings) == 0 {
+		return map[string]string{}, nil
+	}
+	var hp HostPaths
+	err := json.Unmarshal(h.Settings, &hp)
+	if err != nil {
+		return nil, err
+	}
+	if hp.Paths == nil {
+		hp.Paths = map[string]string{}
+	}
+	return hp.Paths, nil
+}
+
+// SetPaths sets the paths in the host's settings JSON
+func (h *Host) SetPaths(paths map[string]string) error {
+	hp := HostPaths{Paths: paths}
+	settings, err := json.Marshal(hp)
+	if err != nil {
+		return err
+	}
+	h.Settings = settings
+	return nil
 }
 
 func CreateDatabase(db *sql.DB, force bool) error {
@@ -65,21 +99,21 @@ func CreateDatabase(db *sql.DB, force bool) error {
 }
 
 // AddHost adds a new host to the database
-func AddHost(db *sql.DB, name, hostname, ip, rootPath string) error {
+func AddHost(db *sql.DB, name, hostname, ip, rootPath string, settings json.RawMessage) error {
 	_, err := db.Exec(`
-		INSERT INTO hosts (name, hostname, ip, root_path)
-		VALUES ($1, $2, $3, $4)
-	`, name, strings.ToLower(hostname), ip, rootPath)
+		INSERT INTO hosts (name, hostname, ip, root_path, settings)
+		VALUES ($1, $2, $3, $4, $5)
+	`, name, strings.ToLower(hostname), ip, rootPath, settings)
 	return err
-}
+} // Note: for backward compatibility, rootPath can be provided as ""
 
 // UpdateHost updates an existing host in the database
-func UpdateHost(db *sql.DB, name, hostname, ip, rootPath string) error {
+func UpdateHost(db *sql.DB, oldName, newName, hostname, ip, rootPath string, settings json.RawMessage) error {
 	result, err := db.Exec(`
-		UPDATE hosts 
-		SET hostname = $2, ip = $3, root_path = $4
+		UPDATE hosts
+		SET name = $2, hostname = $3, ip = $4, root_path = $5, settings = $6
 		WHERE name = $1
-	`, name, strings.ToLower(hostname), ip, rootPath)
+	`, oldName, newName, strings.ToLower(hostname), ip, rootPath, settings)
 	if err != nil {
 		return err
 	}
@@ -89,7 +123,7 @@ func UpdateHost(db *sql.DB, name, hostname, ip, rootPath string) error {
 		return err
 	}
 	if rows == 0 {
-		return fmt.Errorf("host not found: %s", name)
+		return fmt.Errorf("host not found: %s", oldName)
 	}
 	return nil
 }
@@ -111,13 +145,26 @@ func DeleteHost(db *sql.DB, name string) error {
 	return nil
 }
 
+// GetHostByHostname retrieves a host by hostname (case-insensitive)
+func GetHostByHostname(db *sql.DB, hostname string) (*Host, error) {
+	host := &Host{}
+	err := db.QueryRow(`
+		SELECT id, name, hostname, ip, root_path, settings, created_at
+		FROM hosts WHERE LOWER(hostname) = LOWER($1)
+	`, hostname).Scan(&host.ID, &host.Name, &host.Hostname, &host.IP, &host.RootPath, &host.Settings, &host.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("host not found by hostname: %s", hostname)
+	}
+	return host, err
+}
+
 // GetHost retrieves a host by name
 func GetHost(db *sql.DB, name string) (*Host, error) {
 	host := &Host{}
 	err := db.QueryRow(`
-		SELECT id, name, hostname, ip, root_path, created_at 
+		SELECT id, name, hostname, ip, root_path, settings, created_at
 		FROM hosts WHERE name = $1
-	`, name).Scan(&host.ID, &host.Name, &host.Hostname, &host.IP, &host.RootPath, &host.CreatedAt)
+	`, name).Scan(&host.ID, &host.Name, &host.Hostname, &host.IP, &host.RootPath, &host.Settings, &host.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("host not found: %s", name)
 	}
@@ -127,7 +174,7 @@ func GetHost(db *sql.DB, name string) (*Host, error) {
 // ListHosts returns all hosts in the database
 func ListHosts(db *sql.DB) ([]Host, error) {
 	rows, err := db.Query(`
-		SELECT id, name, hostname, ip, root_path, created_at 
+		SELECT id, name, hostname, ip, root_path, settings, created_at
 		FROM hosts ORDER BY name
 	`)
 	if err != nil {
@@ -138,7 +185,7 @@ func ListHosts(db *sql.DB) ([]Host, error) {
 	var hosts []Host
 	for rows.Next() {
 		var host Host
-		err := rows.Scan(&host.ID, &host.Name, &host.Hostname, &host.IP, &host.RootPath, &host.CreatedAt)
+		err := rows.Scan(&host.ID, &host.Name, &host.Hostname, &host.IP, &host.RootPath, &host.Settings, &host.CreatedAt)
 		if err != nil {
 			return nil, err
 		}

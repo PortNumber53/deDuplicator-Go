@@ -9,24 +9,29 @@ import (
 	"strings"
 	"time"
 
+	"deduplicator/db"
 	"github.com/schollz/progressbar/v3"
 )
 
 // HashFiles calculates hashes for files in the database
-func HashFiles(ctx context.Context, db *sql.DB, opts HashOptions) error {
-	// Get host information
-	var rootPath, hostname string
-	err := db.QueryRow(`
-		SELECT root_path, hostname
-		FROM hosts 
-		WHERE LOWER(name) = LOWER($1)
-	`, opts.Host).Scan(&rootPath, &hostname)
+func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
+	// Get host information by hostname (case-insensitive)
+	host, err := db.GetHostByHostname(sqldb, opts.Server)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return fmt.Errorf("host not found: %s", opts.Host)
+		// Try by name if not found by hostname
+		host, err = db.GetHost(sqldb, opts.Server)
+		if err != nil {
+			return fmt.Errorf("server not found: %s", opts.Server)
 		}
-		return fmt.Errorf("error getting host info: %v", err)
 	}
+	paths, err := host.GetPaths()
+	if err != nil {
+		return fmt.Errorf("error decoding host paths: %v", err)
+	}
+	if len(paths) == 0 {
+		return fmt.Errorf("no paths configured for server: %s", opts.Server)
+	}
+	hostname := host.Hostname
 
 	// Build query based on options
 	query := `
@@ -45,11 +50,12 @@ func HashFiles(ctx context.Context, db *sql.DB, opts HashOptions) error {
 			query += ` AND hash IS NULL`
 		}
 	}
+	query += getRowLimitClause()
 
 	// First, count total files to process
 	var totalFiles int64
 	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM (%s) AS subquery", query)
-	err = db.QueryRow(countQuery, hostname).Scan(&totalFiles)
+	err = sqldb.QueryRow(countQuery, hostname).Scan(&totalFiles)
 	if err != nil {
 		return fmt.Errorf("error counting files: %v", err)
 	}
@@ -74,7 +80,7 @@ func HashFiles(ctx context.Context, db *sql.DB, opts HashOptions) error {
 		}))
 
 	// Prepare update statement
-	stmt, err := db.Prepare(`
+	stmt, err := sqldb.Prepare(`
 		UPDATE files 
 		SET hash = $1, last_hashed_at = NOW()
 		WHERE id = $2
@@ -85,7 +91,7 @@ func HashFiles(ctx context.Context, db *sql.DB, opts HashOptions) error {
 	defer stmt.Close()
 
 	// Prepare statement to mark problematic files
-	skipStmt, err := db.Prepare(`
+	skipStmt, err := sqldb.Prepare(`
 		UPDATE files 
 		SET hash = 'TIMEOUT_ERROR', last_hashed_at = NOW()
 		WHERE id = $1
@@ -98,7 +104,9 @@ func HashFiles(ctx context.Context, db *sql.DB, opts HashOptions) error {
 	// Instead of querying all files at once, we'll fetch them in batches
 	// to avoid keeping all file records in memory
 	batchSize := 100
-	offset := 0
+
+	// Use an ID bookmark for batching instead of OFFSET
+	lastID := 0
 
 	// Track statistics
 	var processed, skipped int64
@@ -111,18 +119,21 @@ func HashFiles(ctx context.Context, db *sql.DB, opts HashOptions) error {
 		default:
 		}
 
-		// Query a batch of files
-		batchQuery := fmt.Sprintf("%s LIMIT %d OFFSET %d", query, batchSize, offset)
-		rows, err := db.Query(batchQuery, hostname)
+		// Query a batch of files using id > lastID
+		batchQuery := fmt.Sprintf("%s AND id > $2 ORDER BY id ASC LIMIT %d", query, batchSize)
+		rows, err := sqldb.Query(batchQuery, hostname, lastID)
 		if err != nil {
 			return fmt.Errorf("error querying files: %v", err)
 		}
 
-		// Process each file in the batch
 		fileCount := 0
 		for rows.Next() {
-			fileCount++
-
+			select {
+			case <-ctx.Done():
+				fmt.Printf("\nOperation cancelled after processing %d files\n", processed)
+				return fmt.Errorf("operation cancelled")
+			default:
+			}
 			var id int
 			var path string
 			err := rows.Scan(&id, &path)
@@ -131,8 +142,25 @@ func HashFiles(ctx context.Context, db *sql.DB, opts HashOptions) error {
 				continue
 			}
 
-			// Construct full path
-			fullPath := filepath.Join(rootPath, path)
+			// Update lastID to the current file's id
+			lastID = id
+
+			// Resolve full path using new friendly/relPath structure
+			sepIdx := strings.Index(path, "/")
+			if sepIdx < 0 {
+				log.Printf("Warning: Invalid stored path (no friendly prefix): %s", path)
+				bar.Add(1)
+				continue
+			}
+			friendly := path[:sepIdx]
+			relPath := path[sepIdx+1:]
+			rootPath, ok := paths[friendly]
+			if !ok {
+				log.Printf("Warning: Friendly path '%s' not found in host paths; skipping file: %s", friendly, path)
+				bar.Add(1)
+				continue
+			}
+			fullPath := filepath.Join(rootPath, relPath)
 
 			// Display the file name before hashing
 			fmt.Printf("\nHashing file: %s\n", filepath.Base(path))
@@ -186,9 +214,6 @@ func HashFiles(ctx context.Context, db *sql.DB, opts HashOptions) error {
 		if fileCount < batchSize {
 			break
 		}
-
-		// Move to the next batch
-		offset += batchSize
 	}
 
 	fmt.Printf("\nSuccessfully processed %d files\n", processed)

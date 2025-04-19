@@ -48,26 +48,47 @@ Note: This command is deprecated. Please use 'migrate up' instead.`,
 	},
 	{
 		Name:        "manage",
-		Description: "Manage backup hosts (add/edit/delete/list)",
-		Usage:       "manage [add|edit|delete|list] [options]",
-		Help: `Manage backup hosts in the system.
+		Description: "Manage backup servers and their paths",
+		Usage:       "manage <subcommand> [options]",
+		Help: `Manage backup servers and their associated paths.
 
-Subcommands:
-  list           - List all registered hosts
-  add            - Add a new host
-  edit           - Edit an existing host
-  delete         - Remove a host
+Server Subcommands:
+  server-list                                 - List all registered servers
+  server-add "Friendly server name" --servername <hostname> --ip <ip>   - Add a new server
+  server-edit "Friendly server name" --servername <hostname> --ip <ip>  - Edit an existing server
+  server-delete "Friendly server name"         - Remove a server
 
-Arguments for add/edit:
-  <n>         - Unique identifier for the host
-  <hostname>     - DNS hostname or IP address
-  <ip>           - IP address (optional)
-  <root_path>    - Base directory for file scanning`,
+Path Subcommands:
+  path-list <server name>                     - List all paths for a server
+  path-add <server name> <friendly path name> <absolute path>   - Add a path to a server
+  path-edit <server name> <friendly path name> <new absolute path> - Edit a path for a server
+  path-delete <server name> <friendly path name>                - Remove a path from a server
+
+Arguments:
+  <server name>         - Friendly name for the server
+  <hostname>            - DNS hostname or IP address
+  <ip>                  - IP address (optional)
+  <friendly path name>  - Friendly name for the path
+  <absolute path>       - Absolute path on the server
+
+Examples:
+  deduplicator manage server-list
+  deduplicator manage server-add "Backup1" --servername backup1.example.com --ip 192.168.1.10
+  deduplicator manage server-edit "Backup1" --servername backup1.local --ip 192.168.1.11
+  deduplicator manage server-delete "Backup1"
+  deduplicator manage path-list "Backup1"
+  deduplicator manage path-add "Backup1" "HomeDir" "/home/user"
+  deduplicator manage path-edit "Backup1" "HomeDir" "/mnt/storage"
+  deduplicator manage path-delete "Backup1" "HomeDir"`,
 		Examples: []string{
-			"deduplicator manage list",
-			"deduplicator manage add myhost example.com 192.168.1.100 /data",
-			"deduplicator manage edit myhost newhost.com 192.168.1.101 /backup",
-			"deduplicator manage delete myhost",
+			"deduplicator manage server-list",
+			"deduplicator manage server-add \"Backup1\" --servername backup1.example.com --ip 192.168.1.10",
+			"deduplicator manage server-edit \"Backup1\" --servername backup1.local --ip 192.168.1.11",
+			"deduplicator manage server-delete \"Backup1\"",
+			"deduplicator manage path-list \"Backup1\"",
+			"deduplicator manage path-add \"Backup1\" \"HomeDir\" \"/home/user\"",
+			"deduplicator manage path-edit \"Backup1\" \"HomeDir\" \"/mnt/storage\"",
+			"deduplicator manage path-delete \"Backup1\" \"HomeDir\"",
 		},
 	},
 	{
@@ -151,20 +172,20 @@ Use 'files <subcommand> --help' for more information on a specific subcommand.`,
 			"deduplicator files list-dupes --dest /backup/dupes --run",
 			"deduplicator files hash --force",
 			"deduplicator files prune",
-			"deduplicator files import --source /path/to/files --host myhost",
+			"deduplicator files import --source /path/to/files --server myhost",
 		},
 	},
 	{
 		Name:        "files find",
 		Description: "Search for files based on criteria",
-		Usage:       "files find [--host HOSTNAME]",
+		Usage:       "files find [--server HOSTNAME]",
 		Help: `Search for files in the database based on specified criteria.
 
 Options:
-  --host HOSTNAME  Host to find files for (defaults to current host)`,
+  --server HOSTNAME  Host to find files for (defaults to current host)`,
 		Examples: []string{
 			"deduplicator files find",
-			"deduplicator files find --host myhost",
+			"deduplicator files find --server myhost",
 		},
 	},
 	{
@@ -181,7 +202,7 @@ This command helps keep the database in sync with the actual filesystem.`,
 	{
 		Name:        "files import",
 		Description: "Import files from a source directory to a target host",
-		Usage:       "files import --source DIR --host NAME [options]",
+		Usage:       "files import --source DIR --server NAME [options]",
 		Help: `Import files from a source directory to a target host.
 
 The command transfers files using rsync and adds them to the database.
@@ -189,14 +210,14 @@ Files that already exist on the target host (based on hash) will be skipped.
 
 Options:
   --source DIR        Source directory to import files from (required)
-  --host NAME         Target host to import files to (required)
+  --server NAME         Target server to import files to (required)
   --remove-source     Remove source files after successful transfer (using rsync's --remove-source-files)
   --dry-run           Show what would be imported without making changes
   --count N           Limit the number of files to process (0 = no limit)`,
 		Examples: []string{
-			"deduplicator files import --source /path/to/files --host myhost",
-			"deduplicator files import --source /path/to/files --host myhost --remove-source",
-			"deduplicator files import --source /path/to/files --host myhost --dry-run",
+			"deduplicator files import --source /path/to/files --server myhost",
+			"deduplicator files import --source /path/to/files --server myhost --remove-source",
+			"deduplicator files import --source /path/to/files --server myhost --dry-run",
 		},
 	},
 }

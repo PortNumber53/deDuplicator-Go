@@ -39,11 +39,11 @@ type MoveOptions struct {
 }
 
 // PruneOptions represents options for the prune command
-type PruneOptions struct{}
+
 
 // HashOptions represents options for the hash command
 type HashOptions struct {
-	Host             string
+	Server           string
 	Refresh          bool // hash all files regardless of existing hash
 	Renew            bool // hash files with hashes older than 1 week
 	RetryProblematic bool // retry files that previously timed out
@@ -51,7 +51,7 @@ type HashOptions struct {
 
 // FindOptions represents options for the find command
 type FindOptions struct {
-	Host        string
+	Server      string
 	MinimumSize int64 // Minimum file size to consider
 	NumWorkers  int   // Number of worker goroutines to use
 }

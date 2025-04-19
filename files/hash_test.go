@@ -56,7 +56,7 @@ func TestHashOptions(t *testing.T) {
 		{
 			name: "Hash only files without hashes",
 			options: HashOptions{
-				Host:             "testhost",
+				Server:             "testhost",
 				Refresh:          false,
 				Renew:            false,
 				RetryProblematic: false,
@@ -67,7 +67,7 @@ func TestHashOptions(t *testing.T) {
 		{
 			name: "Refresh all files",
 			options: HashOptions{
-				Host:             "testhost",
+				Server:             "testhost",
 				Refresh:          true,
 				Renew:            false,
 				RetryProblematic: false,
@@ -78,7 +78,7 @@ func TestHashOptions(t *testing.T) {
 		{
 			name: "Renew old hashes",
 			options: HashOptions{
-				Host:             "testhost",
+				Server:             "testhost",
 				Refresh:          false,
 				Renew:            true,
 				RetryProblematic: false,
@@ -89,7 +89,7 @@ func TestHashOptions(t *testing.T) {
 		{
 			name: "Retry problematic files",
 			options: HashOptions{
-				Host:             "testhost",
+				Server:             "testhost",
 				Refresh:          false,
 				Renew:            false,
 				RetryProblematic: true,
@@ -100,7 +100,7 @@ func TestHashOptions(t *testing.T) {
 		{
 			name: "Retry problematic and renew old hashes",
 			options: HashOptions{
-				Host:             "testhost",
+				Server:             "testhost",
 				Refresh:          false,
 				Renew:            true,
 				RetryProblematic: true,
@@ -123,7 +123,7 @@ func TestHashOptions(t *testing.T) {
 			hostRows := sqlmock.NewRows([]string{"root_path", "hostname"}).
 				AddRow("/test/path", "testhost")
 			mock.ExpectQuery("SELECT root_path, hostname").
-				WithArgs(tc.options.Host).
+				WithArgs(tc.options.Server).
 				WillReturnRows(hostRows)
 
 			// Set up expectations for the count query
@@ -161,7 +161,7 @@ func TestHashFilesHostNotFound(t *testing.T) {
 		WillReturnError(sql.ErrNoRows)
 
 	// Call the function
-	err = HashFiles(context.Background(), db, HashOptions{Host: "nonexistent"})
+	err = HashFiles(context.Background(), db, HashOptions{Server: "nonexistent"})
 
 	// Verify the error
 	if err == nil {
@@ -215,7 +215,7 @@ func TestHashFilesProcessing(t *testing.T) {
 		WillReturnRows(countRows)
 
 	// Call the function
-	err = HashFiles(context.Background(), db, HashOptions{Host: "testhost"})
+	err = HashFiles(context.Background(), db, HashOptions{Server: "testhost"})
 	if err != nil {
 		t.Errorf("HashFiles returned error: %v", err)
 	}

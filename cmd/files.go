@@ -63,14 +63,14 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 			`, hostname).Scan(&hostName)
 			if err != nil {
 				if err == sql.ErrNoRows {
-					return fmt.Errorf("no host found for hostname %s, please add it using 'deduplicator manage add' or specify --host", hostname)
+					return fmt.Errorf("no host found for hostname %s, please add it using 'deduplicator manage add' or specify --server", hostname)
 				}
 				return fmt.Errorf("error finding host: %v", err)
 			}
 		}
 
 		return files.FindFiles(ctx, database, files.FindOptions{
-			Host: hostName,
+			Server: hostName,
 		})
 
 	case "hash":
@@ -122,7 +122,7 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 		}
 
 		return files.HashFiles(ctx, database, files.HashOptions{
-			Host:             hostName,
+			Server:             hostName,
 			Refresh:          *force,
 			Renew:            *renew,
 			RetryProblematic: *retryProblematic,
@@ -329,7 +329,7 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 		}
 
 		if *host == "" {
-			return fmt.Errorf("--host is required for import command")
+			return fmt.Errorf("--server is required for import command")
 		}
 
 		return files.ImportFiles(ctx, database, files.ImportOptions{

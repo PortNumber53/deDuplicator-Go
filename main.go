@@ -13,6 +13,7 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 
 	"deduplicator/cmd"
+	"deduplicator/logging"
 )
 
 // VERSION represents the current version of the deduplicator tool
@@ -22,6 +23,8 @@ func main() {
 	if err := godotenv.Load(); err != nil {
 		log.Printf("Warning: Error loading .env file: %v", err)
 	}
+
+	logging.InitLoggers()
 
 	// Check for help or version flags
 	if len(os.Args) > 1 {
@@ -43,13 +46,13 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigChan
-		log.Println("Received shutdown signal, initiating graceful shutdown...")
+		logging.InfoLogger.Println("Received shutdown signal, initiating graceful shutdown...")
 		cancel()
 	}()
 
 	// Create and run application
 	app := cmd.NewApp(VERSION)
 	if err := app.HandleCommand(ctx, os.Args); err != nil {
-		log.Fatal(err)
+		logging.ErrorLogger.Fatal(err)
 	}
 }

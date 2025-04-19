@@ -9,7 +9,22 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"math/rand"
+	"time"
 )
+
+// getRowLimitClause returns a LIMIT clause for SELECT queries if ENVIRONMENT=local
+func getRowLimitClause() string {
+	env := os.Getenv("ENVIRONMENT")
+	if env == "local" {
+		rand.Seed(time.Now().UnixNano())
+		limit := 1000 + rand.Intn(100)
+		log.Printf("[DEBUG] ENVIRONMENT=%s, applying LIMIT %d for quick iteration", env, limit)
+		return " LIMIT " + strconv.Itoa(limit)
+	}
+	log.Printf("[DEBUG] ENVIRONMENT=%s, no LIMIT applied", env)
+	return ""
+}
 
 // DuplicateGroup represents a group of duplicate files
 type DuplicateGroup struct {
