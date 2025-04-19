@@ -44,10 +44,6 @@ func PruneNonExistentFiles(ctx context.Context, sqldb *sql.DB, opts PruneOptions
 	if err != nil {
 		return fmt.Errorf("error fetching host: %v", err)
 	}
-	paths, err := host.GetPaths()
-	if err != nil {
-		return fmt.Errorf("error decoding host paths: %v", err)
-	}
 
 	fmt.Printf("Checking files for host '%s'...\n", host.Name)
 
@@ -66,7 +62,7 @@ func PruneNonExistentFiles(ctx context.Context, sqldb *sql.DB, opts PruneOptions
 	}
 
 	// Get files for this host - use case-insensitive comparison
-	query := "SELECT id, path FROM files WHERE hostname = $1" + getRowLimitClause()
+	query := "SELECT id, path, root_folder FROM files WHERE LOWER(hostname) = LOWER($1)" + getRowLimitClause()
 	rows, err := sqldb.Query(query, host.Hostname)
 	if err != nil {
 		return fmt.Errorf("error querying files: %v", err)
@@ -117,7 +113,8 @@ func PruneNonExistentFiles(ctx context.Context, sqldb *sql.DB, opts PruneOptions
 		}
 		var id int
 		var dbPath string
-		err := rows.Scan(&id, &dbPath)
+		var rootFolder sql.NullString
+		err := rows.Scan(&id, &dbPath, &rootFolder)
 		if err != nil {
 			logging.ErrorLogger.Printf("Warning: Error scanning row: %v", err)
 			continue
@@ -129,23 +126,20 @@ func PruneNonExistentFiles(ctx context.Context, sqldb *sql.DB, opts PruneOptions
 			logging.InfoLogger.Printf("Checked %d/%d files...", checked, totalFiles)
 		}
 
-		// Split dbPath into friendly and relPath
-		friendly := dbPath
-		relPath := ""
-		if sepIdx := strings.Index(dbPath, string(os.PathSeparator)); sepIdx != -1 {
-			friendly = dbPath[:sepIdx]
-			relPath = dbPath[sepIdx+1:]
-		}
-		rootPath, ok := paths[friendly]
-		if !ok {
-			logging.InfoLogger.Printf("Warning: Friendly path '%s' not found in host paths; removing file entry: %s", friendly, dbPath)
-			_, err := stmt.Exec(id)
+		// Use root_folder to construct the full path (empty string if NULL)
+		fullPath := filepath.Join(rootFolder.String, dbPath)
+		fileInfo, err := os.Lstat(fullPath)
+		if err != nil {
+			// Could not stat the file for any reason – treat as non-existent
+			_, err = stmt.Exec(id)
 			if err != nil {
-				logging.ErrorLogger.Printf("Error removing file entry for id %d: %v", id, err)
-			} else {
-				removedMissing++
-				batchDeletes++
+				logging.ErrorLogger.Printf("Warning: Error deleting file %s: %v", dbPath, err)
+				bar.Add(1)
+				continue
 			}
+			removedNonexistent++
+			batchDeletes++
+			logging.InfoLogger.Printf("Deleted entry for non-existent or invalid file: %s", dbPath)
 			if batchDeletes >= batchSize {
 				if err := tx.Commit(); err != nil {
 					return fmt.Errorf("error committing transaction: %v", err)
@@ -160,42 +154,6 @@ func PruneNonExistentFiles(ctx context.Context, sqldb *sql.DB, opts PruneOptions
 					return fmt.Errorf("error preparing statement: %v", err)
 				}
 				batchDeletes = 0
-			}
-			bar.Add(1)
-			continue
-		}
-		fullPath := filepath.Join(rootPath, relPath)
-		fileInfo, err := os.Lstat(fullPath)
-
-		// Check for non-existent files
-		if err != nil {
-			if os.IsNotExist(err) {
-				// Delete from database
-				_, err = stmt.Exec(id)
-				if err != nil {
-					logging.ErrorLogger.Printf("Warning: Error deleting file %s: %v", dbPath, err)
-					continue
-				}
-				removedNonexistent++
-				batchDeletes++
-				logging.InfoLogger.Printf("Deleted entry for non-existent file: %s", fullPath)
-				if batchDeletes >= batchSize {
-					if err := tx.Commit(); err != nil {
-						return fmt.Errorf("error committing transaction: %v", err)
-					}
-					logging.InfoLogger.Printf("Committed batch of %d deletions", batchDeletes)
-					tx, err = sqldb.Begin()
-					if err != nil {
-						return fmt.Errorf("error starting new transaction: %v", err)
-					}
-					stmt, err = tx.Prepare(`DELETE FROM files WHERE id = $1`)
-					if err != nil {
-						return fmt.Errorf("error preparing statement: %v", err)
-					}
-					batchDeletes = 0
-				}
-			} else {
-				logging.ErrorLogger.Printf("Warning: Error checking file %s: %v", fullPath, err)
 			}
 			bar.Add(1)
 			continue

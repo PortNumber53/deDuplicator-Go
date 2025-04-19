@@ -4,12 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"deduplicator/db"
+	"deduplicator/logging"
+
 	"github.com/schollz/progressbar/v3"
 )
 
@@ -24,19 +25,12 @@ func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
 			return fmt.Errorf("server not found: %s", opts.Server)
 		}
 	}
-	paths, err := host.GetPaths()
-	if err != nil {
-		return fmt.Errorf("error decoding host paths: %v", err)
-	}
-	if len(paths) == 0 {
-		return fmt.Errorf("no paths configured for server: %s", opts.Server)
-	}
 	hostname := host.Hostname
 
 	// Build query based on options
 	query := `
-		SELECT id, path 
-		FROM files 
+		SELECT id, path, root_folder
+		FROM files
 		WHERE LOWER(hostname) = LOWER($1)
 	`
 	if !opts.Refresh {
@@ -61,7 +55,7 @@ func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
 	}
 
 	if totalFiles == 0 {
-		fmt.Println("No files need hashing")
+		// fmt.Println("No files need hashing")
 		return nil
 	}
 
@@ -81,7 +75,7 @@ func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
 
 	// Prepare update statement
 	stmt, err := sqldb.Prepare(`
-		UPDATE files 
+		UPDATE files
 		SET hash = $1, last_hashed_at = NOW()
 		WHERE id = $2
 	`)
@@ -92,7 +86,7 @@ func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
 
 	// Prepare statement to mark problematic files
 	skipStmt, err := sqldb.Prepare(`
-		UPDATE files 
+		UPDATE files
 		SET hash = 'TIMEOUT_ERROR', last_hashed_at = NOW()
 		WHERE id = $1
 	`)
@@ -130,56 +124,43 @@ func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
 		for rows.Next() {
 			select {
 			case <-ctx.Done():
-				fmt.Printf("\nOperation cancelled after processing %d files\n", processed)
+				// fmt.Printf("\nOperation cancelled after processing %d files\n", processed)
 				return fmt.Errorf("operation cancelled")
 			default:
 			}
 			var id int
-			var path string
-			err := rows.Scan(&id, &path)
+			var dbPath string
+			var rootFolder sql.NullString
+			err := rows.Scan(&id, &dbPath, &rootFolder)
 			if err != nil {
-				log.Printf("Warning: Error scanning row: %v", err)
+				logging.InfoLogger.Printf("Warning: Error scanning row: %v", err)
 				continue
 			}
 
 			// Update lastID to the current file's id
 			lastID = id
 
-			// Resolve full path using new friendly/relPath structure
-			sepIdx := strings.Index(path, "/")
-			if sepIdx < 0 {
-				log.Printf("Warning: Invalid stored path (no friendly prefix): %s", path)
-				bar.Add(1)
-				continue
-			}
-			friendly := path[:sepIdx]
-			relPath := path[sepIdx+1:]
-			rootPath, ok := paths[friendly]
-			if !ok {
-				log.Printf("Warning: Friendly path '%s' not found in host paths; skipping file: %s", friendly, path)
-				bar.Add(1)
-				continue
-			}
-			fullPath := filepath.Join(rootPath, relPath)
+			// Construct the full dbPath from root_folder + dbPath
+			fullPath := filepath.Join(rootFolder.String, dbPath)
 
 			// Display the file name before hashing
-			fmt.Printf("\nHashing file: %s\n", filepath.Base(path))
+			logging.InfoLogger.Printf("Hashing file: %s", filepath.Base(dbPath))
 
 			// Calculate hash - this will block until the hash is complete or times out
 			hash, err := calculateFileHash(fullPath)
 			if err != nil {
 				if strings.Contains(err.Error(), "hashing timed out") || strings.Contains(err.Error(), "hashing operation cancelled") {
-					log.Printf("Warning: Timeout while hashing file %s: %v", path, err)
+					logging.InfoLogger.Printf("Warning: Timeout while hashing file %s: %v", dbPath, err)
 					// Mark file as problematic in the database
 					_, dbErr := skipStmt.Exec(id)
 					if dbErr != nil {
-						log.Printf("Warning: Error marking file as problematic: %v", dbErr)
+						logging.InfoLogger.Printf("Warning: Error marking file as problematic: %v", dbErr)
 					} else {
 						skipped++
-						log.Printf("Marked file as problematic: %s", path)
+						logging.InfoLogger.Printf("Marked file as problematic: %s", dbPath)
 					}
 				} else {
-					log.Printf("Warning: Error hashing file %s: %v", path, err)
+					logging.InfoLogger.Printf("Warning: Error hashing file %s: %v", dbPath, err)
 				}
 				bar.Add(1)
 				continue
@@ -188,7 +169,7 @@ func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
 			// Update database
 			_, err = stmt.Exec(hash, id)
 			if err != nil {
-				log.Printf("Warning: Error updating hash for file %s: %v", path, err)
+				logging.InfoLogger.Printf("Warning: Error updating hash for file %s: %v", dbPath, err)
 				continue
 			}
 
@@ -216,9 +197,9 @@ func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
 		}
 	}
 
-	fmt.Printf("\nSuccessfully processed %d files\n", processed)
+	// fmt.Printf("\nSuccessfully processed %d files\n", processed)
 	if skipped > 0 {
-		fmt.Printf("Skipped %d problematic files (marked with TIMEOUT_ERROR in database)\n", skipped)
+		// fmt.Printf("Skipped %d problematic files (marked with TIMEOUT_ERROR in database)\n", skipped)
 	}
 	return nil
 }
@@ -229,7 +210,7 @@ func ListProblematicFiles(ctx context.Context, db *sql.DB, hostname string) erro
 	var rootPath string
 	err := db.QueryRow(`
 		SELECT root_path
-		FROM hosts 
+		FROM hosts
 		WHERE LOWER(name) = LOWER($1)
 	`, hostname).Scan(&rootPath)
 	if err != nil {
@@ -241,8 +222,8 @@ func ListProblematicFiles(ctx context.Context, db *sql.DB, hostname string) erro
 
 	// Query for problematic files
 	query := `
-		SELECT id, path, size, last_hashed_at
-		FROM files 
+		SELECT id, dbPath, size, last_hashed_at
+		FROM files
 		WHERE LOWER(hostname) = LOWER($1) AND hash = 'TIMEOUT_ERROR'
 		ORDER BY last_hashed_at DESC
 	`
@@ -255,33 +236,24 @@ func ListProblematicFiles(ctx context.Context, db *sql.DB, hostname string) erro
 
 	// Count the results
 	var count int
-	fmt.Println("Files marked as problematic (TIMEOUT_ERROR):")
-	fmt.Println("--------------------------------------------")
-	fmt.Printf("%-10s %-20s %-15s %s\n", "ID", "Last Attempt", "Size", "Path")
-	fmt.Println("--------------------------------------------")
+	// fmt.Println("Files marked as problematic (TIMEOUT_ERROR):")
+	// fmt.Println("--------------------------------------------")
+	// fmt.Printf("%-10s %-20s %-15s %s\n", "ID", "Last Attempt", "Size", "Path")
+	// fmt.Println("--------------------------------------------")
 
 	for rows.Next() {
 		var id int
-		var path string
+		var dbPath string
 		var size int64
 		var lastHashedAt time.Time
 
-		err := rows.Scan(&id, &path, &size, &lastHashedAt)
+		err := rows.Scan(&id, &dbPath, &size, &lastHashedAt)
 		if err != nil {
 			return fmt.Errorf("error scanning row: %v", err)
 		}
 
 		// Format the size in a human-readable way
-		sizeStr := fmt.Sprintf("%d bytes", size)
-		if size > 1024*1024*1024 {
-			sizeStr = fmt.Sprintf("%.2f GB", float64(size)/(1024*1024*1024))
-		} else if size > 1024*1024 {
-			sizeStr = fmt.Sprintf("%.2f MB", float64(size)/(1024*1024))
-		} else if size > 1024 {
-			sizeStr = fmt.Sprintf("%.2f KB", float64(size)/1024)
-		}
-
-		fmt.Printf("%-10d %-20s %-15s %s\n", id, lastHashedAt.Format("2006-01-02 15:04:05"), sizeStr, path)
+		// sizeStr calculation removed as it's not used when output is suppressed
 		count++
 	}
 
@@ -290,10 +262,10 @@ func ListProblematicFiles(ctx context.Context, db *sql.DB, hostname string) erro
 	}
 
 	if count == 0 {
-		fmt.Println("No problematic files found.")
+		// fmt.Println("No problematic files found.")
 	} else {
-		fmt.Printf("\nFound %d problematic files.\n", count)
-		fmt.Println("\nTo retry these files, use: dedupe hash --retry-problematic")
+		// fmt.Printf("\nFound %d problematic files.\n", count)
+		// fmt.Println("\nTo retry these files, use: dedupe hash --retry-problematic")
 	}
 
 	return nil

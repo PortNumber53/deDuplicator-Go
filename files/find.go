@@ -51,10 +51,10 @@ func FindFiles(ctx context.Context, sqldb *sql.DB, opts FindOptions) error {
 
 		// Prepare statement for batch inserts
 		stmt, err = tx.Prepare(`
-			INSERT INTO files (path, hostname, size)
-			VALUES ($1, $2, $3)
+			INSERT INTO files (path, hostname, size, root_folder)
+			VALUES ($1, $2, $3, $4)
 			ON CONFLICT (path, hostname)
-			DO UPDATE SET size = EXCLUDED.size
+			DO UPDATE SET size = EXCLUDED.size, root_folder = EXCLUDED.root_folder
 		`)
 		if err != nil {
 			tx.Rollback()
@@ -122,11 +122,11 @@ func FindFiles(ctx context.Context, sqldb *sql.DB, opts FindOptions) error {
 				return nil
 			}
 
-			// Store path as: <friendly>/<relPath> for uniqueness across all paths
-			dbPath := filepath.Join(friendly, relPath)
+			// Store path as: relPath only (relative to root directory)
+			dbPath := relPath
 
-			// Insert file into database using hostname instead of host name
-			_, err = stmt.Exec(dbPath, host.Hostname, info.Size())
+			// Insert file into database using hostname and root_folder
+			_, err = stmt.Exec(dbPath, host.Hostname, info.Size(), rootPath)
 			if err != nil {
 				log.Printf("Warning: Error inserting file %s: %v", dbPath, err)
 				return nil
