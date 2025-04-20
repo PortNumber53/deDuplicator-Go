@@ -13,6 +13,8 @@ import (
 
 // HandleFiles handles file-related commands
 func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
+	fmt.Printf("DEBUG: HandleFiles called with args: %v\n", args)
+	var err error
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" {
 		cmd := FindCommand("files")
 		if cmd != nil {
@@ -23,6 +25,49 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 	}
 
 	switch args[0] {
+	case "import":
+		importCmd := flag.NewFlagSet(args[0], flag.ExitOnError)
+		sourcePath := importCmd.String("source", "", "Source directory to import files from (required)")
+		serverName := importCmd.String("server", "", "Target server to import files to (required)")
+		friendlyPath := importCmd.String("path", "", "Target friendly path on the server to import files to (required)")
+		importRemoveSource := importCmd.Bool("remove-source", false, "Remove source files after successful import")
+		importDryRun := importCmd.Bool("dry-run", false, "Show what would be imported without making changes")
+		importCount := importCmd.Int("count", 0, "Limit the number of files to process (0 = no limit)")
+		err = importCmd.Parse(args[1:])
+		if err != nil {
+			return fmt.Errorf("error parsing command flags: %v", err)
+		}
+		if *sourcePath == "" || *serverName == "" || *friendlyPath == "" {
+			fmt.Println("Usage: files import --source DIR --server NAME --path FRIENDLY [options]")
+			return fmt.Errorf("--source, --server, and --path are required")
+		}
+		err = files.ImportFiles(ctx, database, files.ImportOptions{
+			SourcePath:   *sourcePath,
+			HostName:     *serverName,
+			FriendlyPath: *friendlyPath,
+			RemoveSource: *importRemoveSource,
+			DryRun:       *importDryRun,
+			Count:        *importCount,
+		})
+		if err != nil {
+			fmt.Printf("Import error: %v\n", err)
+		}
+		return err
+
+	case "prune":
+		pruneCmd := flag.NewFlagSet(args[0], flag.ExitOnError)
+		pruneBatchSize := pruneCmd.Int("batch-size", 0, "Number of deletions per transaction commit (default: 250)")
+		err = pruneCmd.Parse(args[1:])
+		if err != nil {
+			return fmt.Errorf("error parsing prune flags: %v", err)
+		}
+		pruneOpts := files.PruneOptions{BatchSize: *pruneBatchSize}
+		err = files.PruneNonExistentFiles(ctx, database, pruneOpts)
+		if err != nil {
+			fmt.Printf("Prune error: %v\n", err)
+		}
+		return err
+
 	case "find":
 		// Check for help flag
 		for _, arg := range args[1:] {
@@ -124,7 +169,7 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 		}
 
 		return files.HashFiles(ctx, database, files.HashOptions{
-			Server:             hostName,
+			Server:           hostName,
 			Refresh:          *force,
 			Renew:            *renew,
 			RetryProblematic: *retryProblematic,
@@ -152,7 +197,8 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 		stripPrefix := cmd.String("strip-prefix", "", "Remove this prefix from paths when moving files")
 		ignoreDestDir := cmd.Bool("ignore-dest", true, "Ignore files that are already in the destination directory")
 
-		if err := cmd.Parse(args[1:]); err != nil {
+		err = cmd.Parse(args[1:])
+		if err != nil {
 			return fmt.Errorf("error parsing command flags: %v", err)
 		}
 
@@ -225,13 +271,11 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 		}
 
 		// Parse command flags
-		cmd := flag.NewFlagSet(args[0], flag.ExitOnError)
-		count := cmd.Int("count", 0, "Limit the number of duplicate groups to show (0 = no limit)")
-		minSize := cmd.String("min-size", "", "Minimum file size to consider (e.g., \"1M\", \"1.5G\", \"500K\")")
-		target := cmd.String("target", "", "Target directory to move duplicates to (required)")
-		dryRun := cmd.Bool("dry-run", false, "Show what would be moved without making changes")
+		moveDupesCmd := flag.NewFlagSet(args[0], flag.ExitOnError)
+		target := moveDupesCmd.String("target", "", "Target directory to move duplicates to (required)")
 
-		if err := cmd.Parse(args[1:]); err != nil {
+		err = moveDupesCmd.Parse(args[1:])
+		if err != nil {
 			return fmt.Errorf("error parsing command flags: %v", err)
 		}
 
@@ -259,88 +303,35 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 			if err == sql.ErrNoRows {
 				return fmt.Errorf("no host found for hostname %s, please add it using 'deduplicator manage add'", hostname)
 			}
-			return fmt.Errorf("error finding host: %v", err)
 		}
 
-		var parsedMinSize int64
-		if *minSize != "" {
-			var err error
-			parsedMinSize, err = files.ParseSize(*minSize)
-			if err != nil {
-				fmt.Printf("Error parsing min-size: %v\n", err)
-				os.Exit(1)
-			}
-		}
-
-		return files.MoveDuplicates(ctx, database, files.DuplicateListOptions{
-			Count:   *count,
-			MinSize: parsedMinSize,
-		}, files.MoveOptions{
-			TargetDir: *target,
-			DryRun:    *dryRun,
-		})
-
-	case "prune":
-		// Check for help flag
-		for _, arg := range args[1:] {
-			if arg == "--help" || arg == "help" {
-				cmd := FindCommand("files prune")
-				if cmd != nil {
-					ShowCommandHelp(*cmd)
-					return nil
-				}
-				break
-			}
-		}
-
-		// Parse prune command flags
-		pruneCmd := flag.NewFlagSet("prune", flag.ExitOnError)
-		if err := pruneCmd.Parse(args[1:]); err != nil {
-			return fmt.Errorf("error parsing prune command flags: %v", err)
-		}
-
-		return files.PruneNonExistentFiles(ctx, database, files.PruneOptions{})
-
-	case "import":
-		// Check for help flag
-		for _, arg := range args[1:] {
-			if arg == "--help" || arg == "help" {
-				cmd := FindCommand("files import")
-				if cmd != nil {
-					ShowCommandHelp(*cmd)
-					return nil
-				}
-				break
-			}
-		}
-
-		// Parse command flags
-		cmd := flag.NewFlagSet(args[0], flag.ExitOnError)
-		source := cmd.String("source", "", "Source directory to import files from (required)")
-		host := cmd.String("host", "", "Target host to import files to (required)")
-		removeSource := cmd.Bool("remove-source", false, "Remove source files after successful import")
-		dryRun := cmd.Bool("dry-run", false, "Show what would be imported without making changes")
-		count := cmd.Int("count", 0, "Limit the number of files to process (0 = no limit)")
-
-		if err := cmd.Parse(args[1:]); err != nil {
+		importCmd := flag.NewFlagSet(args[0], flag.ExitOnError)
+		sourcePath := importCmd.String("source", "", "Source directory to import files from (required)")
+		serverName := importCmd.String("server", "", "Target server to import files to (required)")
+		friendlyPath := importCmd.String("path", "", "Target friendly path on the server to import files to (required)")
+		importRemoveSource := importCmd.Bool("remove-source", false, "Remove source files after successful import")
+		importDryRun := importCmd.Bool("dry-run", false, "Show what would be imported without making changes")
+		importCount := importCmd.Int("count", 0, "Limit the number of files to process (0 = no limit)")
+		err = importCmd.Parse(args[1:])
+		if err != nil {
 			return fmt.Errorf("error parsing command flags: %v", err)
 		}
-
-		if *source == "" {
-			return fmt.Errorf("--source is required for import command")
+		if *sourcePath == "" || *serverName == "" || *friendlyPath == "" {
+			fmt.Println("Usage: files import --source DIR --server NAME --path FRIENDLY [options]")
+			return fmt.Errorf("--source, --server, and --path are required")
 		}
-
-		if *host == "" {
-			return fmt.Errorf("--server is required for import command")
-		}
-
-		return files.ImportFiles(ctx, database, files.ImportOptions{
-			SourcePath:   *source,
-			HostName:     *host,
-			RemoveSource: *removeSource,
-			DryRun:       *dryRun,
-			Count:        *count,
+		err = files.ImportFiles(ctx, database, files.ImportOptions{
+			SourcePath:   *sourcePath,
+			HostName:     *serverName,
+			FriendlyPath: *friendlyPath,
+			RemoveSource: *importRemoveSource,
+			DryRun:       *importDryRun,
+			Count:        *importCount,
 		})
+		if err != nil {
+			fmt.Printf("Import error: %v\n", err)
+		}
+		return err
 
 	case "mirror":
 		// Check for help flag
@@ -358,11 +349,11 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 		if len(args) < 2 {
 			return fmt.Errorf("files mirror requires a friendly path argument")
 		}
-
-		friendlyPath := args[1]
+		var friendlyPath string
+		friendlyPath = args[1]
 		return files.MirrorFriendlyPath(ctx, database, friendlyPath)
 
-default:
+	default:
 		return fmt.Errorf("unknown files subcommand: %s", args[0])
 	}
 }

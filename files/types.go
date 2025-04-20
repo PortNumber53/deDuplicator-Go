@@ -27,6 +27,7 @@ type DedupeOptions struct {
 type ImportOptions struct {
 	SourcePath   string // Source directory to import files from
 	HostName     string // Target hostname to import files to
+	FriendlyPath string // Target friendly path on the server to import files to
 	RemoveSource bool   // If true, remove source files after successful import
 	DryRun       bool   // If true, only show what would be done without making changes
 	Count        int    // Limit the number of files to process (0 = no limit)

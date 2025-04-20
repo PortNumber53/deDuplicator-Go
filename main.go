@@ -52,6 +52,7 @@ func main() {
 
 	// Create and run application
 	app := cmd.NewApp(VERSION)
+	fmt.Printf("DEBUG: os.Args = %v\n", os.Args)
 	if err := app.HandleCommand(ctx, os.Args); err != nil {
 		logging.ErrorLogger.Fatal(err)
 	}
