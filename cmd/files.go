@@ -39,6 +39,7 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 		// Parse find command flags
 		findCmd := flag.NewFlagSet("find", flag.ExitOnError)
 		findHost := findCmd.String("host", "", "Host to find files for (defaults to current host)")
+		findPath := findCmd.String("path", "", "Friendly path name to find files for (optional)")
 
 		if err := findCmd.Parse(args[1:]); err != nil {
 			return fmt.Errorf("error parsing find command flags: %v", err)
@@ -71,6 +72,7 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 
 		return files.FindFiles(ctx, database, files.FindOptions{
 			Server: hostName,
+			Path:   *findPath,
 		})
 
 	case "hash":
@@ -340,7 +342,27 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 			Count:        *count,
 		})
 
-	default:
+	case "mirror":
+		// Check for help flag
+		for _, arg := range args[1:] {
+			if arg == "--help" || arg == "help" {
+				cmd := FindCommand("files mirror")
+				if cmd != nil {
+					ShowCommandHelp(*cmd)
+					return nil
+				}
+				break
+			}
+		}
+
+		if len(args) < 2 {
+			return fmt.Errorf("files mirror requires a friendly path argument")
+		}
+
+		friendlyPath := args[1]
+		return files.MirrorFriendlyPath(ctx, database, friendlyPath)
+
+default:
 		return fmt.Errorf("unknown files subcommand: %s", args[0])
 	}
 }

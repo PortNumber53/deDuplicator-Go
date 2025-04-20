@@ -85,18 +85,16 @@ func FindFiles(ctx context.Context, sqldb *sql.DB, opts FindOptions) error {
 			BarEnd:        "]",
 		}))
 
-	// Walk all configured paths
-	for friendly, rootPath := range paths {
-		log.Printf("Scanning path '%s': %s", friendly, rootPath)
+	// Walk all configured paths, or just the requested one if opts.Path is set
+	if opts.Path != "" {
+		rootPath, ok := paths[opts.Path]
+		if !ok {
+			return fmt.Errorf("friendly path '%s' not found for server '%s'", opts.Path, host.Name)
+		}
+		log.Printf("Scanning path '%s': %s", opts.Path, rootPath)
 		if _, err := os.Stat(rootPath); os.IsNotExist(err) {
 			log.Printf("Warning: path does not exist: %s", rootPath)
-			continue
-		}
-		select {
-		case <-ctx.Done():
-			fmt.Printf("\nOperation cancelled after processing %d files\n", processedFiles)
-			return fmt.Errorf("operation cancelled")
-		default:
+			return nil
 		}
 		err = filepath.Walk(rootPath, func(path string, info os.FileInfo, err error) error {
 			select {
@@ -104,45 +102,32 @@ func FindFiles(ctx context.Context, sqldb *sql.DB, opts FindOptions) error {
 				return ctx.Err()
 			default:
 			}
-
 			if err != nil {
 				log.Printf("Warning: Error accessing path %s: %v", path, err)
 				return nil
 			}
-
-			// Skip directories and symlinks
 			if info.IsDir() || (info.Mode()&os.ModeSymlink) != 0 {
 				return nil
 			}
-
-			// Get relative path from root
 			relPath, err := filepath.Rel(rootPath, path)
 			if err != nil {
 				log.Printf("Warning: Error getting relative path for %s: %v", path, err)
 				return nil
 			}
-
-			// Store path as: relPath only (relative to root directory)
 			dbPath := relPath
-
-			// Insert file into database using hostname and root_folder
 			_, err = stmt.Exec(dbPath, host.Hostname, info.Size(), rootPath)
 			if err != nil {
 				log.Printf("Warning: Error inserting file %s: %v", dbPath, err)
 				return nil
 			}
-
 			processedFiles++
 			currentBatch++
-
-			// Commit every 1000 files
 			if currentBatch >= 1000 {
 				if err := startNewTransaction(); err != nil {
 					return err
 				}
 				bar.Describe(fmt.Sprintf("[cyan]Finding files... (%d processed)[reset]", processedFiles))
 			}
-
 			bar.Add(1)
 			return nil
 		})
@@ -160,9 +145,73 @@ func FindFiles(ctx context.Context, sqldb *sql.DB, opts FindOptions) error {
 			}
 			return fmt.Errorf("error walking directory: %v", err)
 		}
-		// Print done message for this path
-		log.Printf("\n%s Done processing \"%s\"", time.Now().Format("2006/01/02 15:04:05"), friendly)
+		log.Printf("\n%s Done processing \"%s\"", time.Now().Format("2006/01/02 15:04:05"), opts.Path)
+	} else {
+		for friendly, rootPath := range paths {
+			log.Printf("Scanning path '%s': %s", friendly, rootPath)
+			if _, err := os.Stat(rootPath); os.IsNotExist(err) {
+				log.Printf("Warning: path does not exist: %s", rootPath)
+				continue
+			}
+			select {
+			case <-ctx.Done():
+				fmt.Printf("\nOperation cancelled after processing %d files\n", processedFiles)
+				return fmt.Errorf("operation cancelled")
+			default:
+			}
+			err = filepath.Walk(rootPath, func(path string, info os.FileInfo, err error) error {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				default:
+				}
+				if err != nil {
+					log.Printf("Warning: Error accessing path %s: %v", path, err)
+					return nil
+				}
+				if info.IsDir() || (info.Mode()&os.ModeSymlink) != 0 {
+					return nil
+				}
+				relPath, err := filepath.Rel(rootPath, path)
+				if err != nil {
+					log.Printf("Warning: Error getting relative path for %s: %v", path, err)
+					return nil
+				}
+				dbPath := relPath
+				_, err = stmt.Exec(dbPath, host.Hostname, info.Size(), rootPath)
+				if err != nil {
+					log.Printf("Warning: Error inserting file %s: %v", dbPath, err)
+					return nil
+				}
+				processedFiles++
+				currentBatch++
+				if currentBatch >= 1000 {
+					if err := startNewTransaction(); err != nil {
+						return err
+					}
+					bar.Describe(fmt.Sprintf("[cyan]Finding files... (%d processed)[reset]", processedFiles))
+				}
+				bar.Add(1)
+				return nil
+			})
+			if err != nil {
+				if err == context.Canceled {
+					if tx != nil {
+						if err := tx.Commit(); err != nil {
+							log.Printf("Warning: Error committing final batch: %v", err)
+						} else {
+							log.Printf("Successfully committed final batch")
+						}
+					}
+					fmt.Printf("\nOperation cancelled after processing %d files\n", processedFiles)
+					return fmt.Errorf("operation cancelled")
+				}
+				return fmt.Errorf("error walking directory: %v", err)
+			}
+			log.Printf("\n%s Done processing \"%s\"", time.Now().Format("2006/01/02 15:04:05"), friendly)
+		}
 	}
+
 
 	if err != nil {
 		if err == context.Canceled {

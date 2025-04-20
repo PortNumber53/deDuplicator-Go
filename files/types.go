@@ -52,6 +52,7 @@ type HashOptions struct {
 // FindOptions represents options for the find command
 type FindOptions struct {
 	Server      string
+	Path        string // Optional friendly path to filter on
 	MinimumSize int64 // Minimum file size to consider
 	NumWorkers  int   // Number of worker goroutines to use
 }
