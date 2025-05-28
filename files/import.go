@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"deduplicator/db"
 	"deduplicator/logging"
 )
 
@@ -62,25 +64,38 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 	targetHost := strings.ToLower(dbHostName)
 	isLocal := (localHost == targetHost)
 
-	// Use the friendly path as the subdirectory under root_path
-	if opts.FriendlyPath == "" {
-		return fmt.Errorf("friendly path is required")
+	// Get the host's path mappings
+	var host db.Host
+	err = database.QueryRow(`
+		SELECT id, name, hostname, root_path, settings 
+		FROM hosts 
+		WHERE LOWER(name) = LOWER($1)
+	`, opts.HostName).Scan(
+		&host.ID, &host.Name, &host.Hostname, &host.RootPath, &host.Settings,
+	)
+	if err != nil {
+		return fmt.Errorf("error getting host details: %v", err)
 	}
-	// Ensure root path ends with a slash
-	if !strings.HasSuffix(rootPath, "/") {
-		rootPath += "/"
-	}
-	// Ensure friendly path does not start with a slash
-	friendlyPath := strings.TrimLeft(opts.FriendlyPath, "/")
 
-	// Avoid duplicating friendlyPath if rootPath already ends with it (case-insensitive, with or without trailing slash)
-	var destRoot string
-	rootLower := strings.ToLower(strings.TrimRight(rootPath, "/"))
-	friendlyLower := strings.ToLower(strings.Trim(friendlyPath, "/"))
-	if strings.HasSuffix(rootLower, "/"+friendlyLower) || rootLower == friendlyLower {
-		destRoot = rootPath
-	} else {
-		destRoot = filepath.Join(rootPath, friendlyPath) + "/"
+	// Get the actual path for the friendly name
+	paths, err := host.GetPaths()
+	if err != nil {
+		return fmt.Errorf("error getting path mappings: %v", err)
+	}
+
+	// Look up the actual path for the friendly name
+	actualPath, exists := paths[opts.FriendlyPath]
+	if !exists {
+		// If no mapping exists, fall back to the old behavior for backward compatibility
+		actualPath = filepath.Join(host.RootPath, opts.FriendlyPath)
+		fmt.Printf("Warning: No path mapping found for friendly name '%s', using default path: %s\n", 
+			opts.FriendlyPath, actualPath)
+	}
+
+	// Use the actual path from the mapping
+	destRoot := actualPath
+	if !strings.HasSuffix(destRoot, "/") {
+		destRoot += "/"
 	}
 
 	fmt.Printf("Importing files from %s to %s (%s:%s)\n", opts.SourcePath, targetHost, targetHost, destRoot)
@@ -89,11 +104,13 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 	}
 
 	// Walk through the source directory
-	fileCount := 0
-	transferCount := 0
-	skipCount := 0
-	errorCount := 0
-	processedCount := 0
+	var (
+		transferCount int
+		skipCount    int
+		errorCount   int
+		fileCount    int
+		removedCount int // Track number of files removed from source
+	)
 
 	err = filepath.Walk(opts.SourcePath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -108,7 +125,7 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 		}
 
 		// Check if we've reached the count limit
-		if opts.Count > 0 && processedCount >= opts.Count {
+		if opts.Count > 0 && fileCount >= opts.Count {
 			return filepath.SkipAll
 		}
 
@@ -120,7 +137,6 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 		}
 
 		fileCount++
-		processedCount++
 
 		// Get relative path from source directory
 		relPath, err := filepath.Rel(opts.SourcePath, path)
@@ -215,12 +231,16 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 				rsyncArgs = []string{"-avz", path, targetPath}
 				if opts.RemoveSource {
 					rsyncArgs = []string{"-avz", "--remove-source-files", path, targetPath}
+					removedCount++
+					fmt.Printf("Removed source file: %s\n", path)
 				}
 				fmt.Printf("Transferring %s to %s\n", path, targetPath)
 			} else {
-				rsyncArgs = []string{"-avz", path, targetHost+":"+targetPath}
+				rsyncArgs = []string{"-avz", path, targetHost + ":" + targetPath}
 				if opts.RemoveSource {
-					rsyncArgs = []string{"-avz", "--remove-source-files", path, targetHost+":"+targetPath}
+					rsyncArgs = []string{"-avz", "--remove-source-files", path, targetHost + ":" + targetPath}
+					removedCount++
+					fmt.Printf("Removed source file: %s\n", path)
 				}
 				fmt.Printf("Transferring %s to %s:%s\n", path, targetHost, targetPath)
 			}
@@ -261,6 +281,9 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 	fmt.Printf("\nImport summary:\n")
 	fmt.Printf("  Total files processed: %d\n", fileCount)
 	fmt.Printf("  Files transferred: %d\n", transferCount)
+	if opts.RemoveSource {
+		fmt.Printf("  Source files removed: %d\n", removedCount)
+	}
 	fmt.Printf("  Files skipped (already exist): %d\n", skipCount)
 	fmt.Printf("  Errors: %d\n", errorCount)
 

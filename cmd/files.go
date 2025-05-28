@@ -21,7 +21,17 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 			ShowCommandHelp(*cmd)
 			return nil
 		}
-		return fmt.Errorf("files command requires a subcommand: find, list-dupes, move-dupes, hash, prune, or import")
+		return fmt.Errorf(`files - Manage file operations
+
+Subcommands:
+  import      Import files into the database
+  find        Find files in the database
+  hash        Hash files and store the hashes
+  list-dupes List duplicate files
+  move-dupes Move duplicate files
+  prune      Remove non-existent files from database
+
+Use "files <subcommand> --help" for more information about a subcommand.`)
 	}
 
 	switch args[0] {
@@ -138,17 +148,18 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 		force := hashCmd.Bool("force", false, "Rehash files even if they already have a hash")
 		renew := hashCmd.Bool("renew", false, "Recalculate hashes older than 1 week")
 		retryProblematic := hashCmd.Bool("retry-problematic", false, "Retry files that previously timed out")
-		// count parameter is defined but not used in the HashFiles function
 		_ = hashCmd.Int("count", 0, "Process only N files (0 = unlimited)")
 
 		if err := hashCmd.Parse(args[1:]); err != nil {
-			return fmt.Errorf("error parsing hash command flags: %v", err)
+			fmt.Printf("Error: failed to parse hash command flags: %v\n", err)
+			return err
 		}
 
 		// Get hostname for current machine
 		hostname, err := os.Hostname()
 		if err != nil {
-			return fmt.Errorf("error getting hostname: %v", err)
+			fmt.Printf("Error: failed to get hostname: %v\n", err)
+			return err
 		}
 
 		// Convert hostname to lowercase for consistency
@@ -163,17 +174,31 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 		`, hostname).Scan(&hostName)
 		if err != nil {
 			if err == sql.ErrNoRows {
-				return fmt.Errorf("no host found for hostname %s, please add it using 'deduplicator manage add'", hostname)
+				fmt.Printf("Error: no host found for hostname '%s'. Please add it using 'deduplicator manage add'.\n", hostname)
+				return err
 			}
-			return fmt.Errorf("error finding host: %v", err)
+			fmt.Printf("Error: failed to find host in database: %v\n", err)
+			return err
 		}
 
-		return files.HashFiles(ctx, database, files.HashOptions{
+		fmt.Printf("Hashing files for host: %s\n", hostName)
+		err = files.HashFiles(ctx, database, files.HashOptions{
 			Server:           hostName,
 			Refresh:          *force,
 			Renew:            *renew,
 			RetryProblematic: *retryProblematic,
 		})
+		if err != nil {
+			if strings.Contains(err.Error(), "no files need hashing") || strings.Contains(err.Error(), "No files need hashing") {
+				fmt.Println("No files need hashing.")
+				return nil
+			}
+			fmt.Printf("Error: %v\n", err)
+			return err
+		}
+		fmt.Println("Hashing completed successfully.")
+		return nil
+
 
 	case "list-dupes":
 		// Check for help flag
