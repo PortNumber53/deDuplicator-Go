@@ -55,7 +55,7 @@ Note: This command is deprecated. Please use 'migrate up' instead.`,
 Server Subcommands:
   server-list                                 - List all registered servers
   server-add "Friendly server name" --servername <hostname> --ip <ip>   - Add a new server
-  server-edit "Friendly server name" --servername <hostname> --ip <ip>  - Edit an existing server
+  server-edit "Current friendly name" [--new-friendly-name <new name>] [--hostname <hostname>] [--ip <ip>] - Edit an existing server
   server-delete "Friendly server name"         - Remove a server
 
 Path Subcommands:
@@ -74,7 +74,7 @@ Arguments:
 Examples:
   deduplicator manage server-list
   deduplicator manage server-add "Backup1" --servername backup1.example.com --ip 192.168.1.10
-  deduplicator manage server-edit "Backup1" --servername backup1.local --ip 192.168.1.11
+  deduplicator manage server-edit "Backup1" --new-friendly-name "PrimaryBackup" --hostname backup1.newdomain.com
   deduplicator manage server-delete "Backup1"
   deduplicator manage path-list "Backup1"
   deduplicator manage path-add "Backup1" "HomeDir" "/home/user"
@@ -89,6 +89,24 @@ Examples:
 			"deduplicator manage path-add \"Backup1\" \"HomeDir\" \"/home/user\"",
 			"deduplicator manage path-edit \"Backup1\" \"HomeDir\" \"/mnt/storage\"",
 			"deduplicator manage path-delete \"Backup1\" \"HomeDir\"",
+		},
+	},
+	{
+		Name:        "manage server-edit",
+		Description: "Edit an existing server's details (friendly name, hostname, IP).",
+		Usage:       "manage server-edit \"Current friendly name\" [--new-friendly-name <new name>] [--hostname <hostname>] [--ip <ip>]",
+		Help: "Edit the details of an existing server registered in the database.\n\n" +
+			"You must specify the server's current friendly name to identify it.\n\n" +
+			"Options:\n" +
+			"  --new-friendly-name <new name>  Set a new friendly name for the server.\n" +
+			"  --hostname <hostname>           Set a new hostname for the server.\n" +
+			"  --ip <ip>                       Set a new IP address for the server.\n\n" +
+			"If an option is not provided, the corresponding value for the server will remain unchanged.",
+		Examples: []string{
+			"deduplicator manage server-edit \"Old Server Name\" --new-friendly-name \"New Server Name\"",
+			"deduplicator manage server-edit \"My Server\" --hostname \"new.server.hostname.com\"",
+			"deduplicator manage server-edit \"My Server\" --ip \"192.168.1.100\"",
+			"deduplicator manage server-edit \"Server Alpha\" --new-friendly-name \"Server Beta\" --hostname \"beta.local\" --ip \"10.0.0.5\"",
 		},
 	},
 	{
@@ -169,7 +187,8 @@ Use 'files <subcommand> --help' for more information on a specific subcommand.`,
 			"deduplicator files find",
 			"deduplicator files list-dupes --count 10",
 			"deduplicator files list-dupes --min-size 1G",
-			"deduplicator files move-dupes --target /backup/dupes --run",
+			"deduplicator files move-dupes --target /backup/dupes",
+			"deduplicator files move-dupes --target /backup/dupes --dry-run",
 			"deduplicator files hash --force",
 			"deduplicator files prune",
 			"deduplicator files import --source /path/to/files --server myhost",
@@ -178,14 +197,16 @@ Use 'files <subcommand> --help' for more information on a specific subcommand.`,
 	{
 		Name:        "files find",
 		Description: "Search for files based on criteria",
-		Usage:       "files find [--server HOSTNAME]",
+		Usage:       "files find [--server HOSTNAME] [--path PATH_NAME]",
 		Help: `Search for files in the database based on specified criteria.
 
 Options:
-  --server HOSTNAME  Host to find files for (defaults to current host)`,
+  --server HOSTNAME  Host to find files for (defaults to current host)
+  --path PATH_NAME   Friendly path name to search within (optional)`,
 		Examples: []string{
 			"deduplicator files find",
 			"deduplicator files find --server myhost",
+			"deduplicator files find --server myhost --path 'My Documents'",
 		},
 	},
 	{
@@ -210,14 +231,40 @@ Files that already exist on the target host (based on hash) will be skipped.
 
 Options:
   --source DIR        Source directory to import files from (required)
-  --server NAME         Target server to import files to (required)
-  --remove-source     Remove source files after successful transfer (using rsync's --remove-source-files)
-  --dry-run           Show what would be imported without making changes
-  --count N           Limit the number of files to process (0 = no limit)`,
+  --server NAME      Target server to import files to (required)
+  --path PATH        Friendly path on the target server (required)
+  --duplicate DIR    Move duplicate files to this directory instead of skipping
+  --remove-source     Remove source files after successful import
+  --dry-run          Show what would be imported without making changes
+  --count N          Limit the number of files to process (0 = no limit, default: 0)`,
 		Examples: []string{
 			"deduplicator files import --source /path/to/files --server myhost",
 			"deduplicator files import --source /path/to/files --server myhost --remove-source",
 			"deduplicator files import --source /path/to/files --server myhost --dry-run",
+		},
+	},
+	{
+		Name:        "files move-dupes",
+		Description: "Move duplicate files to a specified target directory",
+		Usage:       "files move-dupes --target TARGET_DIR [--dry-run]",
+		Help: `Move duplicate files to a specified target directory.
+
+This command identifies duplicate files in the database and moves all but one copy
+to the specified target directory. By default, it runs in dry-run mode to show
+what would be moved without making any changes.
+
+Options:
+  --target string   Target directory where duplicate files will be moved (required)
+  --dry-run         Show what would be moved without making any changes (default: false)
+  --help            Show help for move-dupes command
+
+Note: The original directory structure will be preserved under the target directory.`,
+		Examples: []string{
+			"# Show what would be moved (dry run)",
+			"deduplicator files move-dupes --target /backup/dupes --dry-run",
+			"",
+			"# Actually move duplicate files",
+			"deduplicator files move-dupes --target /backup/dupes",
 		},
 	},
 }

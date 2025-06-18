@@ -43,12 +43,26 @@ Use "files <subcommand> --help" for more information about a subcommand.`)
 		importRemoveSource := importCmd.Bool("remove-source", false, "Remove source files after successful import")
 		importDryRun := importCmd.Bool("dry-run", false, "Show what would be imported without making changes")
 		importCount := importCmd.Int("count", 0, "Limit the number of files to process (0 = no limit)")
+		duplicateDir := importCmd.String("duplicate", "", "Move duplicate files to this directory instead of skipping them")
 		err = importCmd.Parse(args[1:])
 		if err != nil {
 			return fmt.Errorf("error parsing command flags: %v", err)
 		}
 		if *sourcePath == "" || *serverName == "" || *friendlyPath == "" {
+			fmt.Println("Import files from a source directory into the database")
+			fmt.Println("")
 			fmt.Println("Usage: files import --source DIR --server NAME --path FRIENDLY [options]")
+			fmt.Println("")
+			fmt.Println("Required flags:")
+			fmt.Println("  --source string   Source directory to import files from")
+			fmt.Println("  --server string   Target server name where files will be stored")
+			fmt.Println("  --path string     Friendly path on the target server")
+			fmt.Println("")
+			fmt.Println("Options:")
+			fmt.Println("  --duplicate string   Move duplicate files to this directory instead of skipping")
+			fmt.Println("  --remove-source      Remove source files after successful import")
+			fmt.Println("  --dry-run            Show what would be imported without making changes")
+			fmt.Println("  --count int         Limit the number of files to process (0 = no limit, default: 0)")
 			return fmt.Errorf("--source, --server, and --path are required")
 		}
 		err = files.ImportFiles(ctx, database, files.ImportOptions{
@@ -58,6 +72,7 @@ Use "files <subcommand> --help" for more information about a subcommand.`)
 			RemoveSource: *importRemoveSource,
 			DryRun:       *importDryRun,
 			Count:        *importCount,
+			DuplicateDir: *duplicateDir,
 		})
 		if err != nil {
 			fmt.Printf("Import error: %v\n", err)
@@ -93,42 +108,47 @@ Use "files <subcommand> --help" for more information about a subcommand.`)
 
 		// Parse find command flags
 		findCmd := flag.NewFlagSet("find", flag.ExitOnError)
-		findHost := findCmd.String("host", "", "Host to find files for (defaults to current host)")
-		findPath := findCmd.String("path", "", "Friendly path name to find files for (optional)")
+		serverFlag := findCmd.String("server", "", "Host to find files for (defaults to current host)")
+		pathNameFlag := findCmd.String("path", "", "Friendly path name to search within (optional)")
 
-		if err := findCmd.Parse(args[1:]); err != nil {
+		err = findCmd.Parse(args[1:])
+		if err != nil {
 			return fmt.Errorf("error parsing find command flags: %v", err)
 		}
 
-		hostName := *findHost
-		if hostName == "" {
-			// Get hostname for current machine
-			hostname, err := os.Hostname()
+		var serverToUse string
+		if *serverFlag != "" {
+			serverToUse = *serverFlag
+		} else {
+			// Default to current host if --server is not provided
+			osHostname, err := os.Hostname()
 			if err != nil {
-				return fmt.Errorf("error getting hostname: %v", err)
+				return fmt.Errorf("error getting current OS hostname: %v", err)
 			}
-
-			// Convert hostname to lowercase for consistency
-			hostname = strings.ToLower(hostname)
-
-			// Find host in database by hostname (case-insensitive)
-			err = database.QueryRow(`
-				SELECT name
-				FROM hosts
-				WHERE LOWER(hostname) = LOWER($1)
-			`, hostname).Scan(&hostName)
+			// Find the friendly server name from the database based on the OS hostname
+			err = database.QueryRowContext(ctx, `SELECT name FROM hosts WHERE LOWER(hostname) = LOWER($1)`, strings.ToLower(osHostname)).Scan(&serverToUse)
 			if err != nil {
 				if err == sql.ErrNoRows {
-					return fmt.Errorf("no host found for hostname %s, please add it using 'deduplicator manage add' or specify --server", hostname)
+					return fmt.Errorf("no host found in database for OS hostname '%s'. Please add it using 'manage server-add' or specify --server.", osHostname)
 				}
-				return fmt.Errorf("error finding host: %v", err)
+				return fmt.Errorf("error querying host from database for OS hostname '%s': %v", osHostname, err)
 			}
 		}
 
-		return files.FindFiles(ctx, database, files.FindOptions{
-			Server: hostName,
-			Path:   *findPath,
-		})
+		findOpts := files.FindOptions{
+			Server: serverToUse,
+		}
+
+		if *pathNameFlag != "" {
+			findOpts.Path = *pathNameFlag
+		}
+
+		// Call the actual find function from the files package
+		err = files.FindFiles(ctx, database, findOpts)
+		if err != nil {
+			return fmt.Errorf("error executing find: %v", err)
+		}
+		return nil
 
 	case "hash":
 		// Check for help flag
@@ -198,7 +218,6 @@ Use "files <subcommand> --help" for more information about a subcommand.`)
 		}
 		fmt.Println("Hashing completed successfully.")
 		return nil
-
 
 	case "list-dupes":
 		// Check for help flag
@@ -298,6 +317,8 @@ Use "files <subcommand> --help" for more information about a subcommand.`)
 		// Parse command flags
 		moveDupesCmd := flag.NewFlagSet(args[0], flag.ExitOnError)
 		target := moveDupesCmd.String("target", "", "Target directory to move duplicates to (required)")
+		dryRun := moveDupesCmd.Bool("dry-run", false, "Show what would be moved without making changes")
+		count := moveDupesCmd.Int("count", 0, "Limit the number of duplicate sets to process (0 = no limit)")
 
 		err = moveDupesCmd.Parse(args[1:])
 		if err != nil {
@@ -306,6 +327,13 @@ Use "files <subcommand> --help" for more information about a subcommand.`)
 
 		if *target == "" {
 			return fmt.Errorf("--target is required for move-dupes command")
+		}
+
+		// Create move options
+		moveOpts := files.MoveOptions{
+			TargetDir: *target,
+			DryRun:    *dryRun,
+			Count:     *count,
 		}
 
 		// Get hostname for current machine
@@ -328,35 +356,16 @@ Use "files <subcommand> --help" for more information about a subcommand.`)
 			if err == sql.ErrNoRows {
 				return fmt.Errorf("no host found for hostname %s, please add it using 'deduplicator manage add'", hostname)
 			}
+			return fmt.Errorf("error finding host: %v", err)
 		}
 
-		importCmd := flag.NewFlagSet(args[0], flag.ExitOnError)
-		sourcePath := importCmd.String("source", "", "Source directory to import files from (required)")
-		serverName := importCmd.String("server", "", "Target server to import files to (required)")
-		friendlyPath := importCmd.String("path", "", "Target friendly path on the server to import files to (required)")
-		importRemoveSource := importCmd.Bool("remove-source", false, "Remove source files after successful import")
-		importDryRun := importCmd.Bool("dry-run", false, "Show what would be imported without making changes")
-		importCount := importCmd.Int("count", 0, "Limit the number of files to process (0 = no limit)")
-		err = importCmd.Parse(args[1:])
-		if err != nil {
-			return fmt.Errorf("error parsing command flags: %v", err)
+		// Call MoveDuplicates with the appropriate options
+		dupOpts := files.DuplicateListOptions{
+			Count:   *count,
+			MinSize: 0, // No minimum size filter
 		}
-		if *sourcePath == "" || *serverName == "" || *friendlyPath == "" {
-			fmt.Println("Usage: files import --source DIR --server NAME --path FRIENDLY [options]")
-			return fmt.Errorf("--source, --server, and --path are required")
-		}
-		err = files.ImportFiles(ctx, database, files.ImportOptions{
-			SourcePath:   *sourcePath,
-			HostName:     *serverName,
-			FriendlyPath: *friendlyPath,
-			RemoveSource: *importRemoveSource,
-			DryRun:       *importDryRun,
-			Count:        *importCount,
-		})
-		if err != nil {
-			fmt.Printf("Import error: %v\n", err)
-		}
-		return err
+
+		return files.MoveDuplicates(ctx, database, dupOpts, moveOpts)
 
 	case "mirror":
 		// Check for help flag

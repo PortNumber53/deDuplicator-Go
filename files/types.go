@@ -31,12 +31,14 @@ type ImportOptions struct {
 	RemoveSource bool   // If true, remove source files after successful import
 	DryRun       bool   // If true, only show what would be done without making changes
 	Count        int    // Limit the number of files to process (0 = no limit)
+	DuplicateDir string // If non-empty, move duplicate files to this directory instead of skipping
 }
 
 // MoveOptions represents options for moving duplicate files
 type MoveOptions struct {
 	TargetDir string // Directory to move duplicates to
 	DryRun    bool   // If true, only show what would be done
+	Count     int    // Limit the number of duplicate groups to process (0 = no limit)
 }
 
 // PruneOptions represents options for the prune command

@@ -88,7 +88,7 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 	if !exists {
 		// If no mapping exists, fall back to the old behavior for backward compatibility
 		actualPath = filepath.Join(host.RootPath, opts.FriendlyPath)
-		fmt.Printf("Warning: No path mapping found for friendly name '%s', using default path: %s\n", 
+		fmt.Printf("Warning: No path mapping found for friendly name '%s', using default path: %s\n",
 			opts.FriendlyPath, actualPath)
 	}
 
@@ -105,11 +105,15 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 
 	// Walk through the source directory
 	var (
-		transferCount int
-		skipCount    int
-		errorCount   int
-		fileCount    int
-		removedCount int // Track number of files removed from source
+		transferCount     int
+		transferTotalSize int64 // Total size of transferred files
+		skipCount         int
+		skipTotalSize     int64 // Total size of skipped files
+		errorCount        int
+		fileCount         int
+		removedCount      int   // Track number of files removed from source
+		moveCount         int   // Track number of files moved to duplicate dir
+		moveTotalSize     int64 // Total size of files moved to duplicate dir
 	)
 
 	err = filepath.Walk(opts.SourcePath, func(path string, info os.FileInfo, err error) error {
@@ -163,6 +167,49 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 			}
 		}
 
+		// Handle duplicate files if DuplicateDir is specified
+		if targetExists && opts.DuplicateDir != "" {
+			// Create the duplicate directory path by appending the relative path
+			duplicatePath := filepath.Join(opts.DuplicateDir, relPath)
+			duplicateDir := filepath.Dir(duplicatePath)
+
+			if opts.DryRun {
+				fmt.Printf("Would move duplicate %s to %s\n", path, duplicatePath)
+			} else {
+				// Create the target directory structure
+				if err := os.MkdirAll(duplicateDir, 0755); err != nil {
+					fmt.Printf("Error creating duplicate directory %s: %v\n", duplicateDir, err)
+					errorCount++
+					return nil
+				}
+
+				// Move the file to the duplicate directory using rsync for cross-filesystem moves
+				err = os.Rename(path, duplicatePath)
+				if err != nil {
+					// If rename fails due to cross-device link, use rsync
+					if strings.Contains(err.Error(), "invalid cross-device link") {
+						cmd := exec.Command("rsync", "-a", "--remove-source-files", path, duplicatePath)
+						output, rsyncErr := cmd.CombinedOutput()
+						if rsyncErr != nil {
+							fmt.Printf("Error moving duplicate file %s with rsync: %v\nOutput: %s\n", path, rsyncErr, output)
+							errorCount++
+							return nil
+						}
+					} else {
+						// If it's another error, log it and continue
+						fmt.Printf("Error moving duplicate file %s: %v\n", path, err)
+						errorCount++
+						return nil
+					}
+				}
+
+				fmt.Printf("Moved duplicate %s to %s\n", path, duplicatePath)
+			}
+			moveCount++
+			moveTotalSize += info.Size()
+			return nil
+		}
+
 		if opts.DryRun {
 			if targetExists {
 				fmt.Printf("SKIP (target exists): %s\n", targetPath)
@@ -178,6 +225,7 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 			if targetExists {
 				fmt.Printf("SKIP (target exists): %s\n", targetPath)
 				skipCount++
+				skipTotalSize += info.Size()
 				return nil
 			}
 
@@ -188,6 +236,7 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 				errorCount++
 				return nil
 			}
+			transferTotalSize += info.Size()
 
 			// Check if file with this hash already exists for this host
 			var existingCount int
@@ -278,14 +327,35 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 		return fmt.Errorf("error walking source directory: %v", err)
 	}
 
+	// Helper function to format file sizes
+	formatSize := func(size int64) string {
+		const unit = 1024
+		if size < unit {
+			return fmt.Sprintf("%d B", size)
+		}
+		div, exp := int64(unit), 0
+		for n := size / unit; n >= unit; n /= unit {
+			div *= unit
+			exp++
+		}
+		return fmt.Sprintf("%.1f %cB", float64(size)/float64(div), "KMGTPE"[exp])
+	}
+
 	fmt.Printf("\nImport summary:\n")
 	fmt.Printf("  Total files processed: %d\n", fileCount)
-	fmt.Printf("  Files transferred: %d\n", transferCount)
+	fmt.Printf("  Files transferred: %d (%s)\n", transferCount, formatSize(transferTotalSize))
+	if moveCount > 0 {
+		fmt.Printf("  Files moved to duplicates: %d (%s)\n", moveCount, formatSize(moveTotalSize))
+	}
+	if skipCount > 0 {
+		fmt.Printf("  Files skipped (already exist): %d (%s)\n", skipCount, formatSize(skipTotalSize))
+	}
 	if opts.RemoveSource {
 		fmt.Printf("  Source files removed: %d\n", removedCount)
 	}
-	fmt.Printf("  Files skipped (already exist): %d\n", skipCount)
-	fmt.Printf("  Errors: %d\n", errorCount)
+	if errorCount > 0 {
+		fmt.Printf("  Errors: %d\n", errorCount)
+	}
 
 	return nil
 }

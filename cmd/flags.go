@@ -47,6 +47,7 @@ func CreateFlagSets(version string) map[string]*flag.FlagSet {
 	filesMoveCmd.Bool("help", false, "Show help for files move-dupes command")
 	filesMoveCmd.String("target", "", "Target directory to move duplicates to (required)")
 	filesMoveCmd.Bool("dry-run", false, "Show what would be moved without making changes")
+	filesMoveCmd.Int("count", 0, "Limit the number of duplicate sets to process (0 = no limit)")
 	flagSets["files-move-dupes"] = filesMoveCmd
 
 	// Files hash command flags

@@ -74,17 +74,46 @@ func HandleManage(dbConn *sql.DB, args []string) error {
 		return nil
 
 	case "server-edit":
+		// Check for specific help request for server-edit
+		if len(args) >= 2 && (args[1] == "--help" || args[1] == "help") { // Handles 'manage server-edit --help'
+			cmd := FindCommand("manage server-edit")
+			if cmd != nil {
+				ShowCommandHelp(*cmd)
+				return nil
+			}
+			// Fallback if specific command not found (should not happen)
+			fmt.Println("Usage: deduplicator manage server-edit \"Current friendly name\" [--new-friendly-name <new name>] [--hostname <hostname>] [--ip <ip>]")
+			return nil
+		}
+		if len(args) >= 3 && (args[2] == "--help" || args[2] == "help") { // Handles 'manage server-edit <name> --help'
+			cmd := FindCommand("manage server-edit")
+			if cmd != nil {
+				ShowCommandHelp(*cmd)
+				return nil
+			}
+			// Fallback
+			fmt.Println("Usage: deduplicator manage server-edit \"Current friendly name\" [--new-friendly-name <new name>] [--hostname <hostname>] [--ip <ip>]")
+			return nil
+		}
+
 		if len(args) < 2 {
-			fmt.Println("Usage: deduplicator manage server-edit \"Current friendly name\" [--servername <new friendly name>] [--hostname <hostname>] [--ip <ip>]")
+			// This case should ideally be caught by the help checks above if args is just ['server-edit']
+			// but as a fallback, or if only 'server-edit' is passed.
+			cmd := FindCommand("manage server-edit") // Show specific help if available
+			if cmd != nil {
+				ShowCommandHelp(*cmd)
+			} else {
+				fmt.Println("Usage: deduplicator manage server-edit \"Current friendly name\" [--new-friendly-name <new name>] [--hostname <hostname>] [--ip <ip>]")
+			}
 			return nil
 		}
 		currentName := args[1]
-		newName := ""
+		newFriendlyName := ""
 		hostname := ""
 		ip := ""
 		for i := 2; i < len(args); i++ {
-			if args[i] == "--servername" && i+1 < len(args) {
-				newName = args[i+1]
+			if args[i] == "--new-friendly-name" && i+1 < len(args) {
+				newFriendlyName = args[i+1]
 				i++
 			} else if args[i] == "--hostname" && i+1 < len(args) {
 				hostname = args[i+1]
@@ -96,21 +125,29 @@ func HandleManage(dbConn *sql.DB, args []string) error {
 		}
 		host, err := db.GetHost(dbConn, currentName)
 		if err != nil {
-			return fmt.Errorf("error fetching server: %v", err)
+			return fmt.Errorf("error fetching server '%s': %v", currentName, err)
 		}
-		if hostname == "" {
-			hostname = host.Hostname
+
+		// If new values are not provided, keep the existing ones
+		finalFriendlyName := host.Name
+		if newFriendlyName != "" {
+			finalFriendlyName = newFriendlyName
 		}
-		if ip == "" {
-			ip = host.IP
+
+		finalHostname := host.Hostname
+		if hostname != "" {
+			finalHostname = hostname
 		}
-		if newName == "" {
-			newName = host.Name
+
+		finalIP := host.IP
+		if ip != "" {
+			finalIP = ip
 		}
-		if err := db.UpdateHost(dbConn, currentName, newName, hostname, ip, host.RootPath, host.Settings); err != nil {
+
+		if err := db.UpdateHost(dbConn, currentName, finalFriendlyName, finalHostname, finalIP, host.RootPath, host.Settings); err != nil {
 			return fmt.Errorf("error updating server: %v", err)
 		}
-		fmt.Printf("Server '%s' updated successfully\n", newName)
+		fmt.Printf("Server '%s' (now '%s') updated successfully\n", currentName, finalFriendlyName)
 		return nil
 
 	case "server-delete":

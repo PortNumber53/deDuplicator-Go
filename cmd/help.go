@@ -6,7 +6,7 @@ import "fmt"
 func PrintUsage(version string) {
 	fmt.Printf("Deduplicator %s - A tool for finding and managing duplicate files\n\n", version)
 	fmt.Println("Usage:")
-	fmt.Println("  deduplicator <command> [options]\n")
+	fmt.Println("Usage: deduplicator <command> [options]")
 	fmt.Println("Available Commands:")
 
 	// Find the longest command name for padding

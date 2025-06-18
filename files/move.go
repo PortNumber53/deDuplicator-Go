@@ -75,7 +75,7 @@ func MoveDuplicates(ctx context.Context, db *sql.DB, opts DuplicateListOptions, 
 	}
 	query += `
 		)
-		SELECT f.hash, f.path, f.hostname, f.size, f.root_folder
+		SELECT f.hash, f.path, f.hostname, f.size, COALESCE(f.root_folder, '') as root_folder
 		FROM duplicate_hashes d
 		JOIN files f ON f.hash = d.hash
 		WHERE LOWER(f.hostname) = LOWER($1)

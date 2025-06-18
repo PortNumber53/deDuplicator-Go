@@ -17,7 +17,7 @@ import (
 )
 
 // VERSION represents the current version of the deduplicator tool
-const VERSION = "1.3.3"
+const VERSION = "1.3.4"
 
 func main() {
 	if err := godotenv.Load(); err != nil {
@@ -52,7 +52,7 @@ func main() {
 
 	// Create and run application
 	app := cmd.NewApp(VERSION)
-	fmt.Printf("DEBUG: os.Args = %v\n", os.Args)
+	logging.InfoLogger.Printf("DEBUG: os.Args = %v", os.Args)
 	if err := app.HandleCommand(ctx, os.Args); err != nil {
 		logging.ErrorLogger.Fatal(err)
 	}
