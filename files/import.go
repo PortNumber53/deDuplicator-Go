@@ -67,8 +67,8 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 	// Get the host's path mappings
 	var host db.Host
 	err = database.QueryRow(`
-		SELECT id, name, hostname, root_path, settings 
-		FROM hosts 
+		SELECT id, name, hostname, root_path, settings
+		FROM hosts
 		WHERE LOWER(name) = LOWER($1)
 	`, opts.HostName).Scan(
 		&host.ID, &host.Name, &host.Hostname, &host.RootPath, &host.Settings,
@@ -115,6 +115,20 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 		moveCount         int   // Track number of files moved to duplicate dir
 		moveTotalSize     int64 // Total size of files moved to duplicate dir
 	)
+
+	// Helper function to format file sizes
+	formatSize := func(size int64) string {
+		const unit = 1024
+		if size < unit {
+			return fmt.Sprintf("%d B", size)
+		}
+		div, exp := int64(unit), 0
+		for n := size / unit; n >= unit; n /= unit {
+			div *= unit
+			exp++
+		}
+		return fmt.Sprintf("%.1f %cB", float64(size)/float64(div), "KMGTPE"[exp])
+	}
 
 	err = filepath.Walk(opts.SourcePath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -184,6 +198,7 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 				}
 
 				// Move the file to the duplicate directory using rsync for cross-filesystem moves
+				fmt.Printf("Moving duplicate %s (%s) to %s\n", path, formatSize(info.Size()), duplicatePath)
 				err = os.Rename(path, duplicatePath)
 				if err != nil {
 					// If rename fails due to cross-device link, use rsync
@@ -203,10 +218,9 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 					}
 				}
 
-				fmt.Printf("Moved duplicate %s to %s\n", path, duplicatePath)
+				moveCount++
+				moveTotalSize += info.Size()
 			}
-			moveCount++
-			moveTotalSize += info.Size()
 			return nil
 		}
 
@@ -214,12 +228,12 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 			if targetExists {
 				fmt.Printf("SKIP (target exists): %s\n", targetPath)
 			} else if isLocal {
-				fmt.Printf("Would transfer %s to %s\n", path, targetPath)
+				fmt.Printf("Would transfer %s (%s) to %s\n", path, formatSize(info.Size()), targetPath)
 			} else {
-				fmt.Printf("Would transfer %s to %s:%s\n", path, targetHost, targetPath)
+				fmt.Printf("Would transfer %s (%s) to %s:%s\n", path, formatSize(info.Size()), targetHost, targetPath)
 			}
 			if opts.RemoveSource && !targetExists {
-				fmt.Printf("Would remove source file %s after transfer\n", path)
+				fmt.Printf("Would remove source file %s (%s) after transfer\n", path, formatSize(info.Size()))
 			}
 		} else {
 			if targetExists {
@@ -277,21 +291,19 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 			// Use rsync to transfer the file
 			var rsyncArgs []string
 			if isLocal {
-				rsyncArgs = []string{"-avz", path, targetPath}
 				if opts.RemoveSource {
 					rsyncArgs = []string{"-avz", "--remove-source-files", path, targetPath}
-					removedCount++
-					fmt.Printf("Removed source file: %s\n", path)
+				} else {
+					rsyncArgs = []string{"-avz", path, targetPath}
 				}
-				fmt.Printf("Transferring %s to %s\n", path, targetPath)
+				fmt.Printf("Transferring %s (%s) to %s\n", path, formatSize(info.Size()), targetPath)
 			} else {
-				rsyncArgs = []string{"-avz", path, targetHost + ":" + targetPath}
 				if opts.RemoveSource {
 					rsyncArgs = []string{"-avz", "--remove-source-files", path, targetHost + ":" + targetPath}
-					removedCount++
-					fmt.Printf("Removed source file: %s\n", path)
+				} else {
+					rsyncArgs = []string{"-avz", path, targetHost + ":" + targetPath}
 				}
-				fmt.Printf("Transferring %s to %s:%s\n", path, targetHost, targetPath)
+				fmt.Printf("Transferring %s (%s) to %s:%s\n", path, formatSize(info.Size()), targetHost, targetPath)
 			}
 
 			rsyncCmd := exec.CommandContext(ctx, "rsync", rsyncArgs...)
@@ -301,6 +313,10 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 				fmt.Printf("Error transferring file %s: %v\n%s\n", path, err, output)
 				errorCount++
 				return nil
+			}
+
+			if opts.RemoveSource {
+				removedCount++
 			}
 
 			// Debug output: print query and parameters with canonical hostname
@@ -325,20 +341,6 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 
 	if err != nil {
 		return fmt.Errorf("error walking source directory: %v", err)
-	}
-
-	// Helper function to format file sizes
-	formatSize := func(size int64) string {
-		const unit = 1024
-		if size < unit {
-			return fmt.Sprintf("%d B", size)
-		}
-		div, exp := int64(unit), 0
-		for n := size / unit; n >= unit; n /= unit {
-			div *= unit
-			exp++
-		}
-		return fmt.Sprintf("%.1f %cB", float64(size)/float64(div), "KMGTPE"[exp])
 	}
 
 	fmt.Printf("\nImport summary:\n")
