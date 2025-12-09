@@ -32,6 +32,7 @@ type ImportOptions struct {
 	DryRun       bool   // If true, only show what would be done without making changes
 	Count        int    // Limit the number of files to process (0 = no limit)
 	DuplicateDir string // If non-empty, move duplicate files to this directory instead of skipping
+	Age          int    // Only import files older than this many minutes
 }
 
 // MoveOptions represents options for moving duplicate files

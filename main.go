@@ -17,7 +17,7 @@ import (
 )
 
 // VERSION represents the current version of the deduplicator tool
-const VERSION = "1.3.4"
+const VERSION = "1.3.5"
 
 func main() {
 	if err := godotenv.Load(); err != nil {

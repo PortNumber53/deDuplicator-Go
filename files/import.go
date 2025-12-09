@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"deduplicator/db"
 	"deduplicator/logging"
@@ -112,8 +113,10 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 		errorCount        int
 		fileCount         int
 		removedCount      int   // Track number of files removed from source
-		moveCount         int   // Track number of files moved to duplicate dir
-		moveTotalSize     int64 // Total size of files moved to duplicate dir
+		moveCount           int   // Track number of files moved to duplicate dir
+		moveTotalSize       int64 // Total size of files moved to duplicate dir
+		skipTooNewCount     int   // Track number of files skipped because they are too new
+		skipTooNewTotalSize int64 // Total size of files skipped because they are too new
 	)
 
 	// Helper function to format file sizes
@@ -140,6 +143,17 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 		// Skip directories
 		if info.IsDir() {
 			return nil
+		}
+
+		// Check file age if specified
+		if opts.Age > 0 {
+			ageDuration := time.Duration(opts.Age) * time.Minute
+			if time.Since(info.ModTime()) < ageDuration {
+				fmt.Printf("SKIP (too new): %s (age %s)\n", path, time.Since(info.ModTime()).Round(time.Second))
+				skipTooNewCount++
+				skipTooNewTotalSize += info.Size()
+				return nil
+			}
 		}
 
 		// Check if we've reached the count limit
@@ -351,6 +365,9 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 	}
 	if skipCount > 0 {
 		fmt.Printf("  Files skipped (already exist): %d (%s)\n", skipCount, formatSize(skipTotalSize))
+	}
+	if skipTooNewCount > 0 {
+		fmt.Printf("  Files skipped (too new): %d (%s)\n", skipTooNewCount, formatSize(skipTooNewTotalSize))
 	}
 	if opts.RemoveSource {
 		fmt.Printf("  Source files removed: %d\n", removedCount)

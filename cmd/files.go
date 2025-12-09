@@ -44,6 +44,7 @@ Use "files <subcommand> --help" for more information about a subcommand.`)
 		importDryRun := importCmd.Bool("dry-run", false, "Show what would be imported without making changes")
 		importCount := importCmd.Int("count", 0, "Limit the number of files to process (0 = no limit)")
 		duplicateDir := importCmd.String("duplicate", "", "Move duplicate files to this directory instead of skipping them")
+		importAge := importCmd.Int("age", 0, "Only import files older than this many minutes")
 		err = importCmd.Parse(args[1:])
 		if err != nil {
 			return fmt.Errorf("error parsing command flags: %v", err)
@@ -62,7 +63,8 @@ Use "files <subcommand> --help" for more information about a subcommand.`)
 			fmt.Println("  --duplicate string   Move duplicate files to this directory instead of skipping")
 			fmt.Println("  --remove-source      Remove source files after successful import")
 			fmt.Println("  --dry-run            Show what would be imported without making changes")
-			fmt.Println("  --count int         Limit the number of files to process (0 = no limit, default: 0)")
+			fmt.Println("  --count int          Limit the number of files to process (0 = no limit, default: 0)")
+			fmt.Println("  --age int            Only import files older than this many minutes")
 			return fmt.Errorf("--source, --server, and --path are required")
 		}
 		err = files.ImportFiles(ctx, database, files.ImportOptions{
@@ -73,6 +75,7 @@ Use "files <subcommand> --help" for more information about a subcommand.`)
 			DryRun:       *importDryRun,
 			Count:        *importCount,
 			DuplicateDir: *duplicateDir,
+			Age:          *importAge,
 		})
 		if err != nil {
 			fmt.Printf("Import error: %v\n", err)
