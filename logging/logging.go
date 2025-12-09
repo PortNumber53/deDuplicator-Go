@@ -1,8 +1,10 @@
 package logging
 
 import (
+	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 )
 
 var (
@@ -19,7 +21,7 @@ func InitLoggers() {
 	var err error
 
 	if logFile != "" {
-		infoHandle, err = os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		infoHandle, err = openLogFile(logFile)
 		if err != nil {
 			log.Printf("Warning: Could not open LOG_FILE %s: %v. Logging to stderr.", logFile, err)
 			infoHandle = os.Stderr
@@ -29,7 +31,7 @@ func InitLoggers() {
 	}
 
 	if errorLogFile != "" {
-		errorHandle, err = os.OpenFile(errorLogFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		errorHandle, err = openLogFile(errorLogFile)
 		if err != nil {
 			log.Printf("Warning: Could not open ERROR_LOG_FILE %s: %v. Logging errors to stderr.", errorLogFile, err)
 			errorHandle = os.Stderr
@@ -40,4 +42,15 @@ func InitLoggers() {
 
 	InfoLogger = log.New(infoHandle, "INFO: ", log.Ldate|log.Ltime|log.Lshortfile)
 	ErrorLogger = log.New(errorHandle, "ERROR: ", log.Ldate|log.Ltime|log.Lshortfile)
+}
+
+// openLogFile creates parent directories for the provided path and returns an opened file handle.
+func openLogFile(path string) (*os.File, error) {
+	dir := filepath.Dir(path)
+	if dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return nil, fmt.Errorf("create log directory %s: %w", dir, err)
+		}
+	}
+	return os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 }
