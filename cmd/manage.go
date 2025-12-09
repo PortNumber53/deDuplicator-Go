@@ -3,6 +3,7 @@ package cmd
 import (
 	"database/sql"
 	"fmt"
+	"os"
 	"strings"
 
 	"deduplicator/db"
@@ -10,7 +11,8 @@ import (
 
 // HandleManage handles the manage command
 func HandleManage(dbConn *sql.DB, args []string) error {
-	if len(args) < 1 {
+	verbose, trimmedArgs := extractManageFlags(args)
+	if len(trimmedArgs) < 1 {
 		cmd := FindCommand("manage")
 		if cmd != nil {
 			ShowCommandHelp(*cmd)
@@ -19,7 +21,7 @@ func HandleManage(dbConn *sql.DB, args []string) error {
 		return fmt.Errorf("manage command requires a subcommand")
 	}
 
-	if args[0] == "help" || args[0] == "--help" {
+	if trimmedArgs[0] == "help" || trimmedArgs[0] == "--help" {
 		cmd := FindCommand("manage")
 		if cmd != nil {
 			ShowCommandHelp(*cmd)
@@ -27,12 +29,22 @@ func HandleManage(dbConn *sql.DB, args []string) error {
 		}
 	}
 
-	subcommand := args[0]
+	subcommand := trimmedArgs[0]
+	args = trimmedArgs
+
+	if verbose {
+		info := currentDBInfo()
+		fmt.Printf("VERBOSE: manage %s (db=%s@%s:%s/%s)\n", subcommand, info.User, info.Host, info.Port, info.Name)
+	}
 
 	switch subcommand {
 	case "server-list":
 		hosts, err := db.ListHosts(dbConn)
 		if err != nil {
+			if verbose {
+				info := currentDBInfo()
+				return fmt.Errorf("error listing servers (db=%s@%s:%s/%s): %v", info.User, info.Host, info.Port, info.Name, err)
+			}
 			return fmt.Errorf("error listing servers: %v", err)
 		}
 		if len(hosts) == 0 {
@@ -266,3 +278,50 @@ func HandleManage(dbConn *sql.DB, args []string) error {
 	}
 }
 
+// extractManageFlags removes manage-level flags (currently --verbose/-v) and
+// returns the flag state along with the remaining args.
+func extractManageFlags(args []string) (bool, []string) {
+	verbose := false
+	remaining := make([]string, 0, len(args))
+	for _, arg := range args {
+		if arg == "--verbose" || arg == "-v" {
+			verbose = true
+			continue
+		}
+		remaining = append(remaining, arg)
+	}
+	return verbose, remaining
+}
+
+type dbInfo struct {
+	Host string
+	Port string
+	User string
+	Name string
+}
+
+// currentDBInfo mirrors the defaults used by connectDB for easier diagnostics.
+func currentDBInfo() dbInfo {
+	host := os.Getenv("DB_HOST")
+	if host == "" {
+		host = "localhost"
+	}
+	port := os.Getenv("DB_PORT")
+	if port == "" {
+		port = "5432"
+	}
+	user := os.Getenv("DB_USER")
+	if user == "" {
+		user = "postgres"
+	}
+	name := os.Getenv("DB_NAME")
+	if name == "" {
+		name = "deduplicator"
+	}
+	return dbInfo{
+		Host: host,
+		Port: port,
+		User: user,
+		Name: name,
+	}
+}
