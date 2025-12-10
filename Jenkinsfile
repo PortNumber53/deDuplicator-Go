@@ -9,6 +9,7 @@ pipeline {
     HOSTS_AMD64 = "brain pinky"
     HOSTS_ARM64 = "rpi4"
     PRIMARY_DB_HOST = "brain"
+    REMOTE_LOCK_DIR = "/var/lock/deduplicator"
   }
 
   stages {
@@ -94,6 +95,8 @@ user=${DB_USER}
 password=${DB_PASSWORD}
 name=${DB_NAME}
 CONFIG
+sudo mkdir -p "${REMOTE_LOCK_DIR}"
+sudo chown grimlock:grimlock "${REMOTE_LOCK_DIR}"
 sudo install -m 755 /tmp/deduplicator /usr/local/bin/deduplicator
 EOF
             }
@@ -108,6 +111,7 @@ export DB_PORT="${DB_PORT}"
 export DB_USER="${DB_USER}"
 export DB_PASSWORD="${DB_PASSWORD}"
 export DB_NAME="${DB_NAME}"
+export DEDUPLICATOR_LOCK_DIR="${REMOTE_LOCK_DIR}"
 deduplicator migrate up
 EOF
               fi

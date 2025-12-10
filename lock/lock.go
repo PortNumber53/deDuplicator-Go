@@ -8,7 +8,7 @@ import (
 	"syscall"
 )
 
-const defaultLockDir = "/tmp/deduplicator"
+const fallbackLockDir = "/tmp/deduplicator"
 
 type Lock struct {
 	path string
@@ -21,7 +21,7 @@ func New(flow string) *Lock {
 	if flow == "" {
 		panic("flow name cannot be empty")
 	}
-	path := filepath.Join(defaultLockDir, fmt.Sprintf("%s.lock", flow))
+	path := filepath.Join(lockDir(), fmt.Sprintf("%s.lock", flow))
 	return &Lock{
 		path: path,
 		flow: flow,
@@ -111,4 +111,12 @@ func MustAcquire(flow string) *Lock {
 		panic(fmt.Sprintf("failed to acquire %s lock: %v", flow, err))
 	}
 	return l
+}
+
+// lockDir resolves the lock directory, allowing override via DEDUPLICATOR_LOCK_DIR.
+func lockDir() string {
+	if custom := os.Getenv("DEDUPLICATOR_LOCK_DIR"); custom != "" {
+		return custom
+	}
+	return fallbackLockDir
 }
