@@ -11,6 +11,7 @@ PRIMARY_DB_HOST="${PRIMARY_DB_HOST:-}"
 REMOTE_LOCK_DIR="${REMOTE_LOCK_DIR:-/var/lock/deduplicator}"
 BINARY_AMD64="${BINARY_AMD64:-dist/deduplicator-linux-amd64}"
 BINARY_ARM64="${BINARY_ARM64:-dist/deduplicator-linux-arm64}"
+LOCAL_MIGRATE_LOCK_DIR="${LOCAL_MIGRATE_LOCK_DIR:-/tmp/deduplicator-ci}"
 
 # Parse DB_URL into component env vars for app and config
 eval "$(python - <<'PY'
@@ -51,6 +52,16 @@ sudo chown grimlock:grimlock "${REMOTE_LOCK_DIR}"
 sudo install -m 755 /tmp/deduplicator /usr/local/bin/deduplicator
 EOF
 }
+
+# Run migrations once from Jenkins workspace (amd64 binary) before fan-out.
+echo "Running migrations from Jenkins workspace"
+DEDUPLICATOR_LOCK_DIR="${LOCAL_MIGRATE_LOCK_DIR}" \
+DB_HOST="${DB_HOST}" \
+DB_PORT="${DB_PORT}" \
+DB_USER="${DB_USER}" \
+DB_PASSWORD="${DB_PASSWORD}" \
+DB_NAME="${DB_NAME}" \
+"${BINARY_AMD64}" migrate up
 
 # Deploy to AMD64 hosts
 for h in ${HOSTS_AMD64}; do
