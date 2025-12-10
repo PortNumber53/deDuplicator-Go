@@ -45,7 +45,7 @@ pipeline {
       }
       steps {
         withCredentials([
-          sshUserPrivateKey(credentialsId: 'deduplicator-ssh', keyFileVariable: 'SSH_KEY'),
+          sshUserPrivateKey(credentialsId: 'Jenkins-private-key', keyFileVariable: 'SSH_KEY'),
           string(credentialsId: 'prod-database-url-godeduplicator', variable: 'DB_URL')
         ]) {
           sh '''
