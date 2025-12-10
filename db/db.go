@@ -100,6 +100,7 @@ func CreateDatabase(db *sql.DB, force bool) error {
 
 // AddHost adds a new host to the database
 func AddHost(db *sql.DB, name, hostname, ip, rootPath string, settings json.RawMessage) error {
+	settings = ensureSettings(settings)
 	_, err := db.Exec(`
 		INSERT INTO hosts (name, hostname, ip, root_path, settings)
 		VALUES ($1, $2, $3, $4, $5)
@@ -109,6 +110,7 @@ func AddHost(db *sql.DB, name, hostname, ip, rootPath string, settings json.RawM
 
 // UpdateHost updates an existing host in the database
 func UpdateHost(db *sql.DB, oldName, newName, hostname, ip, rootPath string, settings json.RawMessage) error {
+	settings = ensureSettings(settings)
 	result, err := db.Exec(`
 		UPDATE hosts
 		SET name = $2, hostname = $3, ip = $4, root_path = $5, settings = $6
@@ -126,6 +128,14 @@ func UpdateHost(db *sql.DB, oldName, newName, hostname, ip, rootPath string, set
 		return fmt.Errorf("host not found: %s", oldName)
 	}
 	return nil
+}
+
+// ensureSettings guarantees we always write valid JSON (defaults to {}).
+func ensureSettings(settings json.RawMessage) json.RawMessage {
+	if len(settings) == 0 {
+		return json.RawMessage(`{}`)
+	}
+	return settings
 }
 
 // DeleteHost deletes a host from the database
