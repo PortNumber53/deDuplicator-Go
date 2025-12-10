@@ -54,7 +54,7 @@ Note: This command is deprecated. Please use 'migrate up' instead.`,
 
 Server Subcommands:
   server-list                                 - List all registered servers
-  server-add "Friendly server name" --servername <hostname> --ip <ip>   - Add a new server
+  server-add "Friendly server name" --hostname <hostname> [--ip <ip>]   - Add a new server
   server-edit "Current friendly name" [--new-friendly-name <new name>] [--hostname <hostname>] [--ip <ip>] - Edit an existing server
   server-delete "Friendly server name"         - Remove a server
 
@@ -69,21 +69,11 @@ Arguments:
   <hostname>            - DNS hostname or IP address
   <ip>                  - IP address (optional)
   <friendly path name>  - Friendly name for the path
-  <absolute path>       - Absolute path on the server
-
-Examples:
-  deduplicator manage server-list
-  deduplicator manage server-add "Backup1" --servername backup1.example.com --ip 192.168.1.10
-  deduplicator manage server-edit "Backup1" --new-friendly-name "PrimaryBackup" --hostname backup1.newdomain.com
-  deduplicator manage server-delete "Backup1"
-  deduplicator manage path-list "Backup1"
-  deduplicator manage path-add "Backup1" "HomeDir" "/home/user"
-  deduplicator manage path-edit "Backup1" "HomeDir" "/mnt/storage"
-  deduplicator manage path-delete "Backup1" "HomeDir"`,
+  <absolute path>       - Absolute path on the server`,
 		Examples: []string{
 			"deduplicator manage server-list",
-			"deduplicator manage server-add \"Backup1\" --servername backup1.example.com --ip 192.168.1.10",
-			"deduplicator manage server-edit \"Backup1\" --servername backup1.local --ip 192.168.1.11",
+			"deduplicator manage server-add \"Backup1\" --hostname backup1.example.com --ip 192.168.1.10",
+			"deduplicator manage server-edit \"Backup1\" --hostname backup1.local --ip 192.168.1.11",
 			"deduplicator manage server-delete \"Backup1\"",
 			"deduplicator manage path-list \"Backup1\"",
 			"deduplicator manage path-add \"Backup1\" \"HomeDir\" \"/home/user\"",
