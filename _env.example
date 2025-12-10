@@ -1,10 +1,10 @@
 ENVIRONMENT=local
 
-DB_HOST=localhost
-DB_PORT=5432
-DB_USER=postgres
-DB_PASSWORD=
-DB_NAME=deduplicator
+DB_HOST=192.168.68.180
+DB_PORT=54180
+DB_USER=dev_deduplicator
+DB_PASSWORD=XOT18N2FJ8uds4o4WR9vSAIA30F1T3J0meCwod0h2QxvJd59eU5Iu18NmwGVl3m
+DB_NAME=dbdev_deduplicator
 
 # Optional: Add any other configuration variables below
 # SCAN_PATH=/path/to/scan  # Default directory to scan if none provided
