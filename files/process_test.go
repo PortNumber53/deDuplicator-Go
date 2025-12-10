@@ -13,7 +13,7 @@ import (
 
 func TestProcessStdinWithMockDB(t *testing.T) {
 	// Create a new mock database
-	db, mock, err := sqlmock.New()
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
 	if err != nil {
 		t.Fatalf("Failed to create mock database: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestProcessStdinWithMockDB(t *testing.T) {
 	// Set up expectations for the host query
 	hostRows := sqlmock.NewRows([]string{"name"}).
 		AddRow("testhost")
-	mock.ExpectQuery("SELECT name FROM hosts WHERE LOWER(hostname) = LOWER($1)").
+	mock.ExpectQuery("SELECT name FROM hosts WHERE LOWER\\(hostname\\) = LOWER\\(\\$1\\)").
 		WithArgs(hostname).
 		WillReturnRows(hostRows)
 
@@ -105,7 +105,7 @@ func TestProcessStdinWithMockDB(t *testing.T) {
 
 func TestProcessStdinHostNotFound(t *testing.T) {
 	// Create a new mock database
-	db, mock, err := sqlmock.New()
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
 	if err != nil {
 		t.Fatalf("Failed to create mock database: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestProcessStdinHostNotFound(t *testing.T) {
 	}
 
 	// Set up expectations for the host query to return no rows
-	mock.ExpectQuery("SELECT name FROM hosts WHERE LOWER(hostname) = LOWER($1)").
+	mock.ExpectQuery("SELECT name FROM hosts WHERE LOWER\\(hostname\\) = LOWER\\(\\$1\\)").
 		WithArgs(hostname).
 		WillReturnError(sql.ErrNoRows)
 
@@ -157,7 +157,7 @@ func TestProcessStdinHostNotFound(t *testing.T) {
 
 func TestProcessStdinEmptyInput(t *testing.T) {
 	// Create a new mock database
-	db, mock, err := sqlmock.New()
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
 	if err != nil {
 		t.Fatalf("Failed to create mock database: %v", err)
 	}
@@ -172,7 +172,7 @@ func TestProcessStdinEmptyInput(t *testing.T) {
 	// Set up expectations for the host query
 	hostRows := sqlmock.NewRows([]string{"name"}).
 		AddRow("testhost")
-	mock.ExpectQuery("SELECT name FROM hosts WHERE LOWER(hostname) = LOWER($1)").
+	mock.ExpectQuery("SELECT name FROM hosts WHERE LOWER\\(hostname\\) = LOWER\\(\\$1\\)").
 		WithArgs(hostname).
 		WillReturnRows(hostRows)
 
@@ -316,7 +316,7 @@ func TestFileTypeDetection(t *testing.T) {
 // TestProcessStdinWithMockDBNoHost tests the ProcessStdin function when no host is found
 func TestProcessStdinWithMockDBNoHost(t *testing.T) {
 	// Create a new mock database
-	db, mock, err := sqlmock.New()
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
 	if err != nil {
 		t.Fatalf("Failed to create mock database: %v", err)
 	}
@@ -329,7 +329,7 @@ func TestProcessStdinWithMockDBNoHost(t *testing.T) {
 	}
 
 	// Set up expectations for the host query with no results
-	mock.ExpectQuery("SELECT name FROM hosts WHERE LOWER(hostname) = LOWER($1)").
+	mock.ExpectQuery("SELECT name FROM hosts WHERE LOWER\\(hostname\\) = LOWER\\(\\$1\\)").
 		WithArgs(hostname).
 		WillReturnError(sql.ErrNoRows)
 
@@ -369,7 +369,7 @@ func TestProcessStdinWithMockDBNoHost(t *testing.T) {
 // TestProcessStdinWithMockDBError tests the ProcessStdin function with a database error
 func TestProcessStdinWithMockDBError(t *testing.T) {
 	// Create a new mock database
-	db, mock, err := sqlmock.New()
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
 	if err != nil {
 		t.Fatalf("Failed to create mock database: %v", err)
 	}
@@ -382,7 +382,7 @@ func TestProcessStdinWithMockDBError(t *testing.T) {
 	}
 
 	// Set up expectations for the host query with an error
-	mock.ExpectQuery("SELECT name FROM hosts WHERE LOWER(hostname) = LOWER($1)").
+	mock.ExpectQuery("SELECT name FROM hosts WHERE LOWER\\(hostname\\) = LOWER\\(\\$1\\)").
 		WithArgs(hostname).
 		WillReturnError(fmt.Errorf("database error"))
 

@@ -3,47 +3,13 @@ package files
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 )
-
-// sqlStripSpace removes all whitespace from SQL queries for comparison
-func sqlStripSpace(sql string) string {
-	// Replace all whitespace with a single space
-	re := regexp.MustCompile(`\s+`)
-	sql = re.ReplaceAllString(sql, " ")
-
-	// Remove spaces around common SQL punctuation
-	sql = strings.ReplaceAll(sql, " (", "(")
-	sql = strings.ReplaceAll(sql, "( ", "(")
-	sql = strings.ReplaceAll(sql, " )", ")")
-	sql = strings.ReplaceAll(sql, ") ", ")")
-	sql = strings.ReplaceAll(sql, " ,", ",")
-	sql = strings.ReplaceAll(sql, ", ", ",")
-	sql = strings.ReplaceAll(sql, " =", "=")
-	sql = strings.ReplaceAll(sql, "= ", "=")
-
-	// Trim leading/trailing whitespace
-	return strings.TrimSpace(sql)
-}
-
-// AnySpaceMatcher is a custom matcher that ignores whitespace differences
-type AnySpaceMatcher struct{}
-
-func (a AnySpaceMatcher) Match(expectedSQL, actualSQL string) error {
-	if sqlStripSpace(expectedSQL) == sqlStripSpace(actualSQL) {
-		return nil
-	}
-	return fmt.Errorf("SQL strings do not match after removing whitespace:\nExpected: %s\nActual: %s",
-		sqlStripSpace(expectedSQL), sqlStripSpace(actualSQL))
-}
 
 func TestHashOptions(t *testing.T) {
 	// Test that HashOptions are correctly applied to the SQL query
@@ -113,27 +79,23 @@ func TestHashOptions(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			// Create a new mock database
-			db, mock, err := sqlmock.New()
+			db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
 			if err != nil {
 				t.Fatalf("Failed to create mock database: %v", err)
 			}
 			defer db.Close()
 
-			// Set up expectations for the host query
-			hostRows := sqlmock.NewRows([]string{"root_path", "hostname"}).
-				AddRow("/test/path", "testhost")
-			mock.ExpectQuery("SELECT root_path, hostname").
+			hostRows := sqlmock.NewRows([]string{"id", "name", "hostname", "ip", "root_path", "settings", "created_at"}).
+				AddRow(1, "testhost", "testhost", "", "/test/path", []byte(`{}`), time.Now())
+			mock.ExpectQuery(`SELECT id, name, hostname, ip, root_path, settings, created_at FROM hosts WHERE LOWER\(hostname\) = LOWER\(\$1\)`).
 				WithArgs(tc.options.Server).
 				WillReturnRows(hostRows)
 
-			// Set up expectations for the count query
-			// The WHERE clause should match our expected clause
 			countRows := sqlmock.NewRows([]string{"count"}).AddRow(0)
-			mock.ExpectQuery("SELECT COUNT.*FROM").
+			mock.ExpectQuery(`SELECT COUNT\(\*\) FROM \(.*`).
 				WithArgs(tc.expectedParam).
 				WillReturnRows(countRows)
 
-			// Call the function
 			err = HashFiles(context.Background(), db, tc.options)
 			if err != nil {
 				t.Errorf("HashFiles returned error: %v", err)
@@ -148,29 +110,27 @@ func TestHashOptions(t *testing.T) {
 }
 
 func TestHashFilesHostNotFound(t *testing.T) {
-	// Create a new mock database
-	db, mock, err := sqlmock.New()
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
 	if err != nil {
 		t.Fatalf("Failed to create mock database: %v", err)
 	}
 	defer db.Close()
 
-	// Set up expectations for the host query to return no rows
-	mock.ExpectQuery("SELECT root_path, hostname").
+	mock.ExpectQuery(`SELECT id, name, hostname, ip, root_path, settings, created_at FROM hosts WHERE LOWER\(hostname\) = LOWER\(\$1\)`).
+		WithArgs("nonexistent").
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectQuery(`SELECT id, name, hostname, ip, root_path, settings, created_at FROM hosts WHERE name = \$1`).
 		WithArgs("nonexistent").
 		WillReturnError(sql.ErrNoRows)
 
-	// Call the function
 	err = HashFiles(context.Background(), db, HashOptions{Server: "nonexistent"})
 
-	// Verify the error
 	if err == nil {
 		t.Error("Expected error for non-existent host, got nil")
-	} else if err.Error() != "host not found: nonexistent" {
-		t.Errorf("Expected 'host not found' error, got: %v", err)
+	} else if err.Error() != "server not found: nonexistent" {
+		t.Errorf("Expected 'server not found' error, got: %v", err)
 	}
 
-	// Verify all expectations were met
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("Unfulfilled expectations: %v", err)
 	}
@@ -227,30 +187,26 @@ func TestHashFilesProcessing(t *testing.T) {
 }
 
 func TestListProblematicFiles(t *testing.T) {
-	// Create a new mock database
-	db, mock, err := sqlmock.New()
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
 	if err != nil {
 		t.Fatalf("Failed to create mock database: %v", err)
 	}
 	defer db.Close()
 
-	// Set up expectations for the host query
 	hostRows := sqlmock.NewRows([]string{"root_path"}).
 		AddRow("/test/path")
-	mock.ExpectQuery("SELECT root_path").
+	mock.ExpectQuery(`SELECT root_path FROM hosts WHERE LOWER\(name\) = LOWER\(\$1\)`).
 		WithArgs("testhost").
 		WillReturnRows(hostRows)
 
-	// Set up expectations for the problematic files query
 	now := time.Now()
-	fileRows := sqlmock.NewRows([]string{"id", "path", "size", "last_hashed_at"}).
+	fileRows := sqlmock.NewRows([]string{"id", "dbPath", "size", "last_hashed_at"}).
 		AddRow(1, "problem1.txt", 1024*1024, now).
 		AddRow(2, "problem2.txt", 1024*1024*1024, now.Add(-24*time.Hour))
-	mock.ExpectQuery("SELECT id, path, size, last_hashed_at").
+	mock.ExpectQuery(`SELECT id, dbPath, size, last_hashed_at FROM files WHERE LOWER\(hostname\) = LOWER\(\$1\) AND hash = 'TIMEOUT_ERROR' ORDER BY last_hashed_at DESC`).
 		WithArgs("testhost").
 		WillReturnRows(fileRows)
 
-	// Call the function
 	err = ListProblematicFiles(context.Background(), db, "testhost")
 	if err != nil {
 		t.Errorf("ListProblematicFiles returned error: %v", err)
@@ -263,56 +219,47 @@ func TestListProblematicFiles(t *testing.T) {
 }
 
 func TestListProblematicFilesHostNotFound(t *testing.T) {
-	// Create a new mock database
-	db, mock, err := sqlmock.New()
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
 	if err != nil {
 		t.Fatalf("Failed to create mock database: %v", err)
 	}
 	defer db.Close()
 
-	// Set up expectations for the host query to return no rows
-	mock.ExpectQuery("SELECT root_path").
+	mock.ExpectQuery(`SELECT root_path FROM hosts WHERE LOWER\(name\) = LOWER\(\$1\)`).
 		WithArgs("nonexistent").
 		WillReturnError(sql.ErrNoRows)
 
-	// Call the function
 	err = ListProblematicFiles(context.Background(), db, "nonexistent")
 
-	// Verify the error
 	if err == nil {
 		t.Error("Expected error for non-existent host, got nil")
 	} else if err.Error() != "host not found: nonexistent" {
 		t.Errorf("Expected 'host not found' error, got: %v", err)
 	}
 
-	// Verify all expectations were met
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("Unfulfilled expectations: %v", err)
 	}
 }
 
 func TestListProblematicFilesNoResults(t *testing.T) {
-	// Create a new mock database
-	db, mock, err := sqlmock.New()
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
 	if err != nil {
 		t.Fatalf("Failed to create mock database: %v", err)
 	}
 	defer db.Close()
 
-	// Set up expectations for the host query
 	hostRows := sqlmock.NewRows([]string{"root_path"}).
 		AddRow("/test/path")
-	mock.ExpectQuery("SELECT root_path").
+	mock.ExpectQuery(`SELECT root_path FROM hosts WHERE LOWER\(name\) = LOWER\(\$1\)`).
 		WithArgs("testhost").
 		WillReturnRows(hostRows)
 
-	// Set up expectations for the problematic files query with no results
-	fileRows := sqlmock.NewRows([]string{"id", "path", "size", "last_hashed_at"})
-	mock.ExpectQuery("SELECT id, path, size, last_hashed_at").
+	fileRows := sqlmock.NewRows([]string{"id", "dbPath", "size", "last_hashed_at"})
+	mock.ExpectQuery(`SELECT id, dbPath, size, last_hashed_at FROM files WHERE LOWER\(hostname\) = LOWER\(\$1\) AND hash = 'TIMEOUT_ERROR' ORDER BY last_hashed_at DESC`).
 		WithArgs("testhost").
 		WillReturnRows(fileRows)
 
-	// Call the function
 	err = ListProblematicFiles(context.Background(), db, "testhost")
 	if err != nil {
 		t.Errorf("ListProblematicFiles returned error: %v", err)

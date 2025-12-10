@@ -29,6 +29,17 @@ pipeline {
       }
     }
 
+    stage('Test') {
+      steps {
+        sh '''
+          set -e
+          GOCACHE=$(mktemp -d)
+          export GOCACHE
+          go test ./... -v
+        '''
+      }
+    }
+
     stage('Build') {
       steps {
         sh '''

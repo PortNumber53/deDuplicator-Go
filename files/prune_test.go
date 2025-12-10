@@ -6,13 +6,14 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
 func TestPruneNonExistentFiles(t *testing.T) {
 	// Create a new mock database
-	db, mock, err := sqlmock.New()
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
 	if err != nil {
 		t.Fatalf("Failed to create mock database: %v", err)
 	}
@@ -39,32 +40,25 @@ func TestPruneNonExistentFiles(t *testing.T) {
 	}
 
 	// Set up expectations for the host query
-	hostRows := sqlmock.NewRows([]string{"name"}).
-		AddRow("testhost")
-	mock.ExpectQuery("SELECT name FROM hosts WHERE LOWER\\(hostname\\) = LOWER\\(\\$1\\)").
+	hostRows := sqlmock.NewRows([]string{"id", "name", "hostname", "ip", "root_path", "settings", "created_at"}).
+		AddRow(1, "testhost", hostname, "", tempDir, []byte(`{}`), time.Now())
+	mock.ExpectQuery(`SELECT id, name, hostname, ip, root_path, settings, created_at FROM hosts WHERE LOWER\(hostname\) = LOWER\(\$1\)`).
 		WithArgs(hostname).
 		WillReturnRows(hostRows)
 
-	// Set up expectations for the host details query
-	hostDetailsRows := sqlmock.NewRows([]string{"name", "root_path"}).
-		AddRow("testhost", tempDir)
-	mock.ExpectQuery("SELECT name, root_path FROM hosts WHERE name = \\$1").
-		WithArgs("testhost").
-		WillReturnRows(hostDetailsRows)
-
 	// Set up expectations for the count query
 	countRows := sqlmock.NewRows([]string{"count"}).AddRow(3)
-	mock.ExpectQuery("SELECT COUNT").
-		WithArgs("testhost").
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM files WHERE LOWER\(hostname\) = LOWER\(\$1\)`).
+		WithArgs(hostname).
 		WillReturnRows(countRows)
 
 	// Set up expectations for the files query
-	fileRows := sqlmock.NewRows([]string{"id", "path"}).
-		AddRow(1, "existing.txt").
-		AddRow(2, "nonexistent.txt").
-		AddRow(3, "symlink.txt")
-	mock.ExpectQuery("SELECT id, path").
-		WithArgs("testhost").
+	fileRows := sqlmock.NewRows([]string{"id", "path", "root_folder"}).
+		AddRow(1, "existing.txt", sql.NullString{String: tempDir, Valid: true}).
+		AddRow(2, "nonexistent.txt", sql.NullString{String: tempDir, Valid: true}).
+		AddRow(3, "symlink.txt", sql.NullString{String: tempDir, Valid: true})
+	mock.ExpectQuery(`SELECT id, path, root_folder FROM files WHERE LOWER\(hostname\) = LOWER\(\$1\)`).
+		WithArgs(hostname).
 		WillReturnRows(fileRows)
 
 	// Set up expectations for transaction
@@ -98,7 +92,7 @@ func TestPruneNonExistentFiles(t *testing.T) {
 
 func TestPruneNonExistentFilesHostNotFound(t *testing.T) {
 	// Create a new mock database
-	db, mock, err := sqlmock.New()
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
 	if err != nil {
 		t.Fatalf("Failed to create mock database: %v", err)
 	}
@@ -111,7 +105,7 @@ func TestPruneNonExistentFilesHostNotFound(t *testing.T) {
 	}
 
 	// Set up expectations for the host query to return no rows
-	mock.ExpectQuery("SELECT name FROM hosts WHERE LOWER\\(hostname\\) = LOWER\\(\\$1\\)").
+	mock.ExpectQuery(`SELECT id, name, hostname, ip, root_path, settings, created_at FROM hosts WHERE LOWER\(hostname\) = LOWER\(\$1\)`).
 		WithArgs(hostname).
 		WillReturnError(sql.ErrNoRows)
 
@@ -131,7 +125,7 @@ func TestPruneNonExistentFilesHostNotFound(t *testing.T) {
 
 func TestPruneNonExistentFilesDeviceFiles(t *testing.T) {
 	// Create a new mock database
-	db, mock, err := sqlmock.New()
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
 	if err != nil {
 		t.Fatalf("Failed to create mock database: %v", err)
 	}
@@ -158,31 +152,24 @@ func TestPruneNonExistentFilesDeviceFiles(t *testing.T) {
 	}
 
 	// Set up expectations for the host query
-	hostRows := sqlmock.NewRows([]string{"name"}).
-		AddRow("testhost")
-	mock.ExpectQuery("SELECT name FROM hosts WHERE LOWER\\(hostname\\) = LOWER\\(\\$1\\)").
+	hostRows := sqlmock.NewRows([]string{"id", "name", "hostname", "ip", "root_path", "settings", "created_at"}).
+		AddRow(1, "testhost", hostname, "", tempDir, []byte(`{}`), time.Now())
+	mock.ExpectQuery(`SELECT id, name, hostname, ip, root_path, settings, created_at FROM hosts WHERE LOWER\(hostname\) = LOWER\(\$1\)`).
 		WithArgs(hostname).
 		WillReturnRows(hostRows)
 
-	// Set up expectations for the host details query
-	hostDetailsRows := sqlmock.NewRows([]string{"name", "root_path"}).
-		AddRow("testhost", tempDir)
-	mock.ExpectQuery("SELECT name, root_path FROM hosts WHERE name = \\$1").
-		WithArgs("testhost").
-		WillReturnRows(hostDetailsRows)
-
 	// Set up expectations for the count query
 	countRows := sqlmock.NewRows([]string{"count"}).AddRow(2)
-	mock.ExpectQuery("SELECT COUNT").
-		WithArgs("testhost").
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM files WHERE LOWER\(hostname\) = LOWER\(\$1\)`).
+		WithArgs(hostname).
 		WillReturnRows(countRows)
 
 	// Set up expectations for the files query
-	fileRows := sqlmock.NewRows([]string{"id", "path"}).
-		AddRow(1, "regular.txt").
-		AddRow(2, "device.pipe") // This would be a device file in real life
-	mock.ExpectQuery("SELECT id, path").
-		WithArgs("testhost").
+	fileRows := sqlmock.NewRows([]string{"id", "path", "root_folder"}).
+		AddRow(1, "regular.txt", sql.NullString{String: tempDir, Valid: true}).
+		AddRow(2, "device.pipe", sql.NullString{String: tempDir, Valid: true})
+	mock.ExpectQuery(`SELECT id, path, root_folder FROM files WHERE LOWER\(hostname\) = LOWER\(\$1\)`).
+		WithArgs(hostname).
 		WillReturnRows(fileRows)
 
 	// Set up expectations for transaction
