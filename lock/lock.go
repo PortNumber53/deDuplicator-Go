@@ -34,7 +34,7 @@ func isProcessRunning(pid int) bool {
 	if err != nil {
 		return false
 	}
-	
+
 	// On Unix systems, FindProcess always succeeds, so we need to send
 	// signal 0 to check if the process actually exists
 	err = process.Signal(syscall.Signal(0))
