@@ -63,7 +63,13 @@ func main() {
 	}
 }
 
-// loadConfigINI reads a simple INI-style config and sets DB_* env vars if unset.
+// loadConfigINI reads a simple INI-style config and sets env vars if unset.
+//
+// Supported sections:
+// - [default] (and lines before any section): misc settings and DB fallbacks
+// - [database]
+// - [rabbitmq]
+// - [logging]
 func loadConfigINI(path string) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -82,11 +88,37 @@ func loadConfigINI(path string) {
 		password string
 		name     string
 	}
+	type rabbitCfg struct {
+		host     string
+		port     string
+		vhost    string
+		user     string
+		password string
+		queue    string
+	}
+	type loggingCfg struct {
+		logFile      string
+		errorLogFile string
+	}
+
 	cfg := dbCfg{}
+	rmq := rabbitCfg{}
+	logCfg := loggingCfg{}
+	lockDir := ""
+	localMigrateLockDir := ""
+
+	section := "default" // also covers lines before any [section]
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") || line == "[database]" {
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+			continue
+		}
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			section = strings.ToLower(strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(line, "["), "]")))
+			if section == "" {
+				section = "default"
+			}
 			continue
 		}
 		parts := strings.SplitN(line, "=", 2)
@@ -95,37 +127,67 @@ func loadConfigINI(path string) {
 		}
 		key := strings.ToLower(strings.TrimSpace(parts[0]))
 		val := strings.TrimSpace(parts[1])
-		switch key {
-		case "url":
-			if u, err := url.Parse(val); err == nil {
-				if u.Hostname() != "" {
-					cfg.host = u.Hostname()
-				}
-				if u.Port() != "" {
-					cfg.port = u.Port()
-				}
-				if u.User != nil {
-					if u.User.Username() != "" {
-						cfg.user = u.User.Username()
+
+		switch section {
+		case "database", "default", "":
+			switch key {
+			case "url":
+				if u, err := url.Parse(val); err == nil {
+					if u.Hostname() != "" {
+						cfg.host = u.Hostname()
 					}
-					if p, ok := u.User.Password(); ok {
-						cfg.password = p
+					if u.Port() != "" {
+						cfg.port = u.Port()
+					}
+					if u.User != nil {
+						if u.User.Username() != "" {
+							cfg.user = u.User.Username()
+						}
+						if p, ok := u.User.Password(); ok {
+							cfg.password = p
+						}
+					}
+					if strings.TrimPrefix(u.Path, "/") != "" {
+						cfg.name = strings.TrimPrefix(u.Path, "/")
 					}
 				}
-				if strings.TrimPrefix(u.Path, "/") != "" {
-					cfg.name = strings.TrimPrefix(u.Path, "/")
-				}
+			case "host":
+				cfg.host = val
+			case "port":
+				cfg.port = val
+			case "user":
+				cfg.user = val
+			case "password":
+				cfg.password = val
+			case "name", "dbname":
+				cfg.name = val
+			case "deduplicator_lock_dir":
+				lockDir = val
+			case "local_migrate_lock_dir":
+				localMigrateLockDir = val
 			}
-		case "host":
-			cfg.host = val
-		case "port":
-			cfg.port = val
-		case "user":
-			cfg.user = val
-		case "password":
-			cfg.password = val
-		case "name", "dbname":
-			cfg.name = val
+		case "rabbitmq":
+			switch key {
+			case "host":
+				rmq.host = val
+			case "port":
+				rmq.port = val
+			case "vhost":
+				rmq.vhost = val
+			case "user", "username":
+				rmq.user = val
+			case "password":
+				rmq.password = val
+			case "queue":
+				rmq.queue = val
+			}
+		case "logging":
+			switch key {
+			case "log_file":
+				logCfg.logFile = val
+			case "error_log_file":
+				logCfg.errorLogFile = val
+			}
 		}
 	}
 	if err := sc.Err(); err != nil {
@@ -147,5 +209,38 @@ func loadConfigINI(path string) {
 	}
 	if os.Getenv("DB_NAME") == "" && cfg.name != "" {
 		os.Setenv("DB_NAME", cfg.name)
+	}
+
+	if os.Getenv("DEDUPLICATOR_LOCK_DIR") == "" && lockDir != "" {
+		os.Setenv("DEDUPLICATOR_LOCK_DIR", lockDir)
+	}
+	if os.Getenv("LOCAL_MIGRATE_LOCK_DIR") == "" && localMigrateLockDir != "" {
+		os.Setenv("LOCAL_MIGRATE_LOCK_DIR", localMigrateLockDir)
+	}
+
+	if os.Getenv("RABBITMQ_HOST") == "" && rmq.host != "" {
+		os.Setenv("RABBITMQ_HOST", rmq.host)
+	}
+	if os.Getenv("RABBITMQ_PORT") == "" && rmq.port != "" {
+		os.Setenv("RABBITMQ_PORT", rmq.port)
+	}
+	if os.Getenv("RABBITMQ_VHOST") == "" && rmq.vhost != "" {
+		os.Setenv("RABBITMQ_VHOST", rmq.vhost)
+	}
+	if os.Getenv("RABBITMQ_USER") == "" && rmq.user != "" {
+		os.Setenv("RABBITMQ_USER", rmq.user)
+	}
+	if os.Getenv("RABBITMQ_PASSWORD") == "" && rmq.password != "" {
+		os.Setenv("RABBITMQ_PASSWORD", rmq.password)
+	}
+	if os.Getenv("RABBITMQ_QUEUE") == "" && rmq.queue != "" {
+		os.Setenv("RABBITMQ_QUEUE", rmq.queue)
+	}
+
+	if os.Getenv("LOG_FILE") == "" && logCfg.logFile != "" {
+		os.Setenv("LOG_FILE", logCfg.logFile)
+	}
+	if os.Getenv("ERROR_LOG_FILE") == "" && logCfg.errorLogFile != "" {
+		os.Setenv("ERROR_LOG_FILE", logCfg.errorLogFile)
 	}
 }

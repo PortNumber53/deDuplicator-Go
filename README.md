@@ -99,6 +99,11 @@ Deduplicator reads DB configuration from (highest priority first):
 Example:
 
 ```ini
+[default]
+# These are optional and can be used even without a [database] section:
+deduplicator_lock_dir=/var/lock/deduplicator
+local_migrate_lock_dir=/var/lock/deduplicator
+
 [database]
 # Either provide a URL:
 url=postgres://user:pass@dbhost:5432/dbname?sslmode=disable
@@ -109,6 +114,18 @@ port=5432
 user=user
 password=pass
 name=dbname
+
+[rabbitmq]
+host=localhost
+port=5672
+vhost=/
+user=guest
+password=guest
+queue=dedup_backup
+
+[logging]
+log_file=/var/log/dedupe/dedupe.log
+error_log_file=/var/log/dedupe/error.log
 ```
 
 ### Environment variables
