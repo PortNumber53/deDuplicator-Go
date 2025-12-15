@@ -118,5 +118,9 @@ func lockDir() string {
 	if custom := os.Getenv("DEDUPLICATOR_LOCK_DIR"); custom != "" {
 		return custom
 	}
+	// Back-compat for earlier deploy scripts
+	if custom := os.Getenv("LOCAL_MIGRATE_LOCK_DIR"); custom != "" {
+		return custom
+	}
 	return fallbackLockDir
 }
