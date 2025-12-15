@@ -93,6 +93,8 @@ RABBITMQ_VHOST=       # RabbitMQ vhost
 RABBITMQ_USER=        # RabbitMQ username
 RABBITMQ_PASSWORD=    # RabbitMQ password
 RABBITMQ_QUEUE=dedup_backup  # RabbitMQ queue name (default: dedup_backup)
+DEDUPLICATOR_LOCK_DIR=/var/lock/deduplicator  # Override lock directory (default: /tmp/deduplicator)
+LOCAL_MIGRATE_LOCK_DIR=/var/lock/deduplicator # Back-compat lock dir override for migrations
 ```
 
 ## How It Works
