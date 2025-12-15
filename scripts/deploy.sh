@@ -12,6 +12,7 @@ REMOTE_LOCK_DIR="${REMOTE_LOCK_DIR:-/var/lock/deduplicator}"
 BINARY_AMD64="${BINARY_AMD64:-dist/deduplicator-linux-amd64}"
 BINARY_ARM64="${BINARY_ARM64:-dist/deduplicator-linux-arm64}"
 LOCAL_MIGRATE_LOCK_DIR="${LOCAL_MIGRATE_LOCK_DIR:-/tmp/deduplicator-ci}"
+CONFIG_SAMPLE="${CONFIG_SAMPLE:-config.ini.sample}"
 
 # Parse DB_URL into component env vars for app and config
 eval "$(python - <<'PY'
@@ -34,10 +35,12 @@ deploy_host() {
   echo "Deploying to ${host} (arch=${arch})"
 
   scp -i "${SSH_KEY}" ${SSH_OPTS} "${binary}" "grimlock@${host}:/tmp/deduplicator"
+  scp -i "${SSH_KEY}" ${SSH_OPTS} "${CONFIG_SAMPLE}" "grimlock@${host}:/tmp/dedupe-config.ini.sample"
 
   ssh -i "${SSH_KEY}" ${SSH_OPTS} "grimlock@${host}" <<EOF
 set -e
 sudo mkdir -p /etc/dedupe
+sudo install -m 644 /tmp/dedupe-config.ini.sample /etc/dedupe/config.ini.sample
 sudo tee /etc/dedupe/config.ini >/dev/null <<CONFIG
 [database]
 url=${DB_URL}

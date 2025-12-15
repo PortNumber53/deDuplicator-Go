@@ -1,0 +1,66 @@
+[default]
+# Global/default settings (lines before any section are treated as [default])
+#
+# deduplicator_lock_dir:
+#   Override where lock files are stored. Useful if /tmp is not writable/usable.
+#   Default: /tmp/deduplicator
+deduplicator_lock_dir=/var/lock/deduplicator
+#
+# local_migrate_lock_dir:
+#   Back-compat alias for lock dir override (also honored by the binary).
+local_migrate_lock_dir=/var/lock/deduplicator
+
+[database]
+# Database settings. You can provide either:
+# - url=... (recommended), OR
+# - individual fields (host/port/user/password/name)
+#
+# url: PostgreSQL connection URL (sslmode is optional; app defaults to sslmode=disable if using DB_* env vars)
+url=postgres://user:pass@dbhost:5432/dbname?sslmode=disable
+#
+# host: PostgreSQL host
+host=dbhost
+#
+# port: PostgreSQL port
+port=5432
+#
+# user: PostgreSQL username
+user=postgres
+#
+# password: PostgreSQL password
+password=change-me
+#
+# name: PostgreSQL database name
+name=deduplicator
+
+[rabbitmq]
+# Optional RabbitMQ settings (only required for `listen` / `queue version` commands)
+#
+# host: RabbitMQ host
+host=localhost
+#
+# port: RabbitMQ port
+port=5672
+#
+# vhost: RabbitMQ vhost
+vhost=/
+#
+# user: RabbitMQ username
+user=guest
+#
+# password: RabbitMQ password
+password=guest
+#
+# queue: RabbitMQ queue name
+queue=dedup_backup
+
+[logging]
+# Optional log file paths. If unset, logs go to stderr.
+#
+# log_file: info log destination
+log_file=/var/log/dedupe/dedupe.log
+#
+# error_log_file: error log destination
+error_log_file=/var/log/dedupe/error.log
+
+
