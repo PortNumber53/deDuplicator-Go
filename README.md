@@ -45,8 +45,6 @@ The deduplicator tool provides several commands to help you manage duplicate fil
 - `update`: Process file paths from stdin and update the database
   - Use this to add new files to the database for duplicate checking
 
-- `prune`: Remove entries for files that no longer exist on the filesystem
-
 - `files`: File-related commands
   - Subcommands:
     - `find`: Find files for a specific host
@@ -65,21 +63,57 @@ The deduplicator tool provides several commands to help you manage duplicate fil
     - `import`: Import files from a source directory to a target host
       - Options:
         - `--source DIR`: Source directory to import files from (required)
-        - `--host NAME`: Target host to import files to (required)
+        - `--server NAME`: Target server to import files to (required)
+        - `--path FRIENDLY`: Friendly path on the target server (required)
         - `--remove-source`: Remove source files after successful import
         - `--dry-run`: Show what would be imported without making changes
         - `--count N`: Limit the number of files to process (0 = no limit)
+        - `--duplicate DIR`: Move duplicates into this directory instead of skipping them
+        - `--age MINUTES`: Only import files older than this many minutes
 
-- `manage`: Manage backup hosts (add/edit/delete/list)
+- `manage`: Manage servers and their configured paths
   - Subcommands:
-    - `list`: List all registered hosts
-    - `add`: Add a new host
-    - `edit`: Edit an existing host
-    - `delete`: Remove a host
+    - `server-list`: List all registered servers
+    - `server-add`: Add a new server
+    - `server-edit`: Edit an existing server
+    - `server-delete`: Remove a server
+    - `path-list`: List paths for a server
+    - `path-add`: Add a path to a server
+    - `path-edit`: Edit a path on a server
+    - `path-delete`: Remove a path from a server
+
+- `problematic`: List problematic files for the current host (timeouts/errors during hashing)
+
+- `listen` / `queue version`: Optional RabbitMQ commands for version update notifications
 
 ## Configuration
 
-The following environment variables can be configured in your `.env` file:
+Deduplicator reads DB configuration from (highest priority first):
+
+1. Existing environment variables (`DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`)
+2. A local `.env` file in the current working directory (optional)
+3. `/etc/dedupe/config.ini` (optional; created by the Jenkins deploy)
+
+### `/etc/dedupe/config.ini`
+
+Example:
+
+```ini
+[database]
+# Either provide a URL:
+url=postgres://user:pass@dbhost:5432/dbname?sslmode=disable
+
+# Or provide individual fields:
+host=dbhost
+port=5432
+user=user
+password=pass
+name=dbname
+```
+
+### Environment variables
+
+The following environment variables can be configured in your `.env` file (or exported in your shell):
 
 ```env
 DB_HOST=localhost      # PostgreSQL host (default: localhost)
@@ -103,12 +137,12 @@ The tool uses a PostgreSQL database to store file information and their hashes. 
 
 Typical workflow:
 1. Run `migrate up` to initialize the database
-2. Use `manage add` to add hosts to the database
+2. Use `manage server-add` and `manage path-add` to register servers and paths
 3. Use `update` to add files to the database
 4. Run `files hash` to calculate file hashes
 5. Use `files list-dupes` to find duplicates
 6. Optionally use `files list-dupes --dest DIR --run` to move duplicate files
-7. Periodically use `prune` to clean up entries for deleted files
+7. Periodically use `files prune` to clean up entries for deleted files
 
 ## Notes
 
@@ -135,17 +169,20 @@ deduplicator migrate status
 
 ### Manage Hosts
 ```bash
-# List all hosts
-deduplicator manage list
+# List all servers
+deduplicator manage server-list
 
-# Add a new host
-deduplicator manage add myhost example.com 192.168.1.100 /data
+# Add a new server
+deduplicator manage server-add "My Server" --hostname myhost.example.com --ip 192.168.1.100
 
-# Edit an existing host
-deduplicator manage edit myhost newhost.com 192.168.1.101 /backup
+# Add a friendly path to a server
+deduplicator manage path-add "My Server" "Data" "/data"
 
-# Delete a host
-deduplicator manage delete myhost
+# Edit an existing server
+deduplicator manage server-edit "My Server" --hostname newhost.example.com --ip 192.168.1.101
+
+# Delete a server
+deduplicator manage server-delete "My Server"
 ```
 
 ### Add Files to Database
@@ -196,7 +233,7 @@ deduplicator files list-dupes --dest /backup/dupes --strip-prefix /data --run
 ### Clean Up Database
 ```bash
 # Remove entries for non-existent files
-deduplicator prune
+deduplicator files prune
 ```
 
 ### Move Duplicate Files
@@ -214,14 +251,17 @@ deduplicator files move-dupes --target /backup/dupes --min-size 1M
 ### Import Files to a Remote Host
 ```bash
 # Show what would be imported (dry run)
-deduplicator files import --source /path/to/files --host myhost --dry-run
+deduplicator files import --source /path/to/files --server "My Server" --path "Data" --dry-run
 
 # Actually import files
-deduplicator files import --source /path/to/files --host myhost
+deduplicator files import --source /path/to/files --server "My Server" --path "Data"
 
 # Import files and remove source files after successful import
-deduplicator files import --source /path/to/files --host myhost --remove-source
+deduplicator files import --source /path/to/files --server "My Server" --path "Data" --remove-source
 
 # Import only the first 10 files
-deduplicator files import --source /path/to/files --host myhost --count 10
+deduplicator files import --source /path/to/files --server "My Server" --path "Data" --count 10
+
+# Only import files older than 60 minutes (useful for “files still being written” avoidance)
+deduplicator files import --source /path/to/files --server "My Server" --path "Data" --age 60
 ```
