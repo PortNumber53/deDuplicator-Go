@@ -34,7 +34,7 @@ deploy_host() {
   arch="$1"; host="$2"; binary="$3"
   echo "Deploying to ${host} (arch=${arch})"
 
-  scp -i "${SSH_KEY}" ${SSH_OPTS} "${binary}" "grimlock@${host}:/tmp/deduplicator"
+  scp -i "${SSH_KEY}" ${SSH_OPTS} "${binary}" "grimlock@${host}:/tmp/deduplicator-binary"
   scp -i "${SSH_KEY}" ${SSH_OPTS} "${CONFIG_SAMPLE}" "grimlock@${host}:/tmp/dedupe-config.ini.sample"
 
   ssh -i "${SSH_KEY}" ${SSH_OPTS} "grimlock@${host}" <<EOF
@@ -52,7 +52,7 @@ name=${DB_NAME}
 CONFIG
 sudo mkdir -p "${REMOTE_LOCK_DIR}"
 sudo chown grimlock:grimlock "${REMOTE_LOCK_DIR}"
-sudo install -m 755 /tmp/deduplicator /usr/local/bin/deduplicator
+sudo install -m 755 /tmp/deduplicator-binary /usr/local/bin/deduplicator
 EOF
 }
 
@@ -87,5 +87,3 @@ done
 for h in ${HOSTS_ARM64}; do
   deploy_host "arm64" "$h" "${BINARY_ARM64}"
 done
-
-
