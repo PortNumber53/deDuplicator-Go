@@ -390,6 +390,70 @@ Use "files <subcommand> --help" for more information about a subcommand.`)
 		friendlyPath = args[1]
 		return files.MirrorFriendlyPath(ctx, database, friendlyPath)
 
+	case "dedupe-group":
+		// Check for help flag
+		for _, arg := range args[1:] {
+			if arg == "--help" || arg == "help" {
+				fmt.Println("Usage: deduplicator files dedupe-group <group name> [options]")
+				fmt.Println("\nOptions:")
+				fmt.Println("  --balance-mode <mode>  Balance mode: priority (default), equal, capacity")
+				fmt.Println("  --respect-limits       Honor min/max copy limits from group settings")
+				fmt.Println("  --dry-run              Show what would be done without making changes")
+				fmt.Println("  --min-size <bytes>     Only process files larger than this size")
+				fmt.Println("  --count <n>            Limit the number of duplicate groups to process")
+				fmt.Println("  --run                  Actually perform the deduplication (opposite of dry-run)")
+				return nil
+			}
+		}
+
+		if len(args) < 2 {
+			return fmt.Errorf("dedupe-group requires a group name argument")
+		}
+
+		groupName := args[1]
+		balanceMode := "priority"
+		respectLimits := false
+		dryRun := true
+		minSize := int64(0)
+		count := 0
+
+		for i := 2; i < len(args); i++ {
+			switch args[i] {
+			case "--balance-mode":
+				if i+1 < len(args) {
+					balanceMode = args[i+1]
+					i++
+				}
+			case "--respect-limits":
+				respectLimits = true
+			case "--dry-run":
+				dryRun = true
+			case "--run":
+				dryRun = false
+			case "--min-size":
+				if i+1 < len(args) {
+					fmt.Sscanf(args[i+1], "%d", &minSize)
+					i++
+				}
+			case "--count":
+				if i+1 < len(args) {
+					fmt.Sscanf(args[i+1], "%d", &count)
+					i++
+				}
+			}
+		}
+
+		opts := files.GroupDedupeOptions{
+			GroupName:     groupName,
+			BalanceMode:   balanceMode,
+			RespectLimits: respectLimits,
+			DryRun:        dryRun,
+			MinSize:       minSize,
+			Count:         count,
+		}
+
+		return files.DeduplicateByGroup(ctx, database, opts)
+
 	default:
 		return fmt.Errorf("unknown files subcommand: %s", args[0])
 	}

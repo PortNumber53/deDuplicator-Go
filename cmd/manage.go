@@ -271,6 +271,141 @@ func HandleManage(dbConn *sql.DB, args []string) error {
 		fmt.Printf("Path '%s' updated for server '%s'\n", friendly, serverName)
 		return nil
 
+	case "group-add":
+		if len(args) < 2 {
+			fmt.Println("Usage: deduplicator manage group-add <group name> [--min-copies N] [--max-copies N] [--description \"...\"]")
+			return nil
+		}
+		groupName := args[1]
+		minCopies := 2
+		var maxCopies *int
+		description := ""
+
+		for i := 2; i < len(args); i++ {
+			if args[i] == "--min-copies" && i+1 < len(args) {
+				fmt.Sscanf(args[i+1], "%d", &minCopies)
+				i++
+			} else if args[i] == "--max-copies" && i+1 < len(args) {
+				var max int
+				fmt.Sscanf(args[i+1], "%d", &max)
+				maxCopies = &max
+				i++
+			} else if args[i] == "--description" && i+1 < len(args) {
+				description = args[i+1]
+				i++
+			}
+		}
+
+		if err := db.CreatePathGroup(dbConn, groupName, description, minCopies, maxCopies); err != nil {
+			return fmt.Errorf("error creating path group: %v", err)
+		}
+		fmt.Printf("Path group '%s' created successfully\n", groupName)
+		return nil
+
+	case "group-list":
+		groups, err := db.ListPathGroups(dbConn)
+		if err != nil {
+			return fmt.Errorf("error listing path groups: %v", err)
+		}
+		if len(groups) == 0 {
+			fmt.Println("No path groups found. Use 'deduplicator manage group-add' to create a group.")
+			return nil
+		}
+		fmt.Printf("%-20s %-10s %-10s %s\n", "GROUP NAME", "MIN COPIES", "MAX COPIES", "DESCRIPTION")
+		fmt.Println(strings.Repeat("-", 80))
+		for _, group := range groups {
+			maxStr := "unlimited"
+			if group.MaxCopies != nil {
+				maxStr = fmt.Sprintf("%d", *group.MaxCopies)
+			}
+			fmt.Printf("%-20s %-10d %-10s %s\n", group.Name, group.MinCopies, maxStr, group.Description)
+		}
+		return nil
+
+	case "group-delete":
+		if len(args) != 2 {
+			fmt.Println("Usage: deduplicator manage group-delete <group name>")
+			return nil
+		}
+		groupName := args[1]
+		if err := db.DeletePathGroup(dbConn, groupName); err != nil {
+			return fmt.Errorf("error deleting path group: %v", err)
+		}
+		fmt.Printf("Path group '%s' deleted successfully\n", groupName)
+		return nil
+
+	case "group-add-path":
+		if len(args) < 4 {
+			fmt.Println("Usage: deduplicator manage group-add-path <group name> <host name> <friendly path> [--priority N]")
+			return nil
+		}
+		groupName, hostName, friendlyPath := args[1], args[2], args[3]
+		priority := 100
+
+		for i := 4; i < len(args); i++ {
+			if args[i] == "--priority" && i+1 < len(args) {
+				fmt.Sscanf(args[i+1], "%d", &priority)
+				i++
+			}
+		}
+
+		if err := db.AddPathToGroup(dbConn, groupName, hostName, friendlyPath, priority); err != nil {
+			return fmt.Errorf("error adding path to group: %v", err)
+		}
+		fmt.Printf("Path '%s:%s' added to group '%s' with priority %d\n", hostName, friendlyPath, groupName, priority)
+		return nil
+
+	case "group-remove-path":
+		if len(args) != 3 {
+			fmt.Println("Usage: deduplicator manage group-remove-path <host name> <friendly path>")
+			return nil
+		}
+		hostName, friendlyPath := args[1], args[2]
+		if err := db.RemovePathFromGroup(dbConn, hostName, friendlyPath); err != nil {
+			return fmt.Errorf("error removing path from group: %v", err)
+		}
+		fmt.Printf("Path '%s:%s' removed from its group\n", hostName, friendlyPath)
+		return nil
+
+	case "group-show":
+		if len(args) != 2 {
+			fmt.Println("Usage: deduplicator manage group-show <group name>")
+			return nil
+		}
+		groupName := args[1]
+		group, err := db.GetPathGroup(dbConn, groupName)
+		if err != nil {
+			return fmt.Errorf("error getting path group: %v", err)
+		}
+
+		maxStr := "unlimited"
+		if group.MaxCopies != nil {
+			maxStr = fmt.Sprintf("%d", *group.MaxCopies)
+		}
+
+		fmt.Printf("Group: %s\n", group.Name)
+		fmt.Printf("Description: %s\n", group.Description)
+		fmt.Printf("Min Copies: %d\n", group.MinCopies)
+		fmt.Printf("Max Copies: %s\n", maxStr)
+		fmt.Printf("Created: %s\n\n", group.CreatedAt.Format("2006-01-02 15:04:05"))
+
+		members, err := db.ListGroupMembers(dbConn, groupName)
+		if err != nil {
+			return fmt.Errorf("error listing group members: %v", err)
+		}
+
+		if len(members) == 0 {
+			fmt.Println("No paths in this group yet.")
+			return nil
+		}
+
+		fmt.Printf("%-20s %-20s %-10s\n", "HOST", "FRIENDLY PATH", "PRIORITY")
+		fmt.Println(strings.Repeat("-", 60))
+		for _, member := range members {
+			fmt.Printf("%-20s %-20s %-10d\n", member.HostName, member.FriendlyPath, member.Priority)
+		}
+		return nil
+
 	default:
 		fmt.Println("Unknown or unsupported manage subcommand.")
 		return nil
