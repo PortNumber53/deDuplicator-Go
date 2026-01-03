@@ -64,12 +64,22 @@ Path Subcommands:
   path-edit <server name> <friendly path name> <new absolute path> - Edit a path for a server
   path-delete <server name> <friendly path name>                - Remove a path from a server
 
+Path Group Subcommands:
+  group-add <group name> [--min-copies N] [--max-copies N] [--description "..."] - Create a new path group
+  group-list                                  - List all path groups
+  group-show <group name>                     - Show detailed information about a path group
+  group-delete <group name>                   - Delete a path group
+  group-add-path <group name> <host name> <friendly path> [--priority N] - Add a path to a group
+  group-remove-path <host name> <friendly path> - Remove a path from its group
+
 Arguments:
   <server name>         - Friendly name for the server
   <hostname>            - DNS hostname or IP address
   <ip>                  - IP address (optional)
   <friendly path name>  - Friendly name for the path
-  <absolute path>       - Absolute path on the server`,
+  <absolute path>       - Absolute path on the server
+  <group name>          - Name for the path group
+  <priority>            - Priority for keeping files (lower = higher priority, default: 100)`,
 		Examples: []string{
 			"deduplicator manage server-list",
 			"deduplicator manage server-add \"Backup1\" --hostname backup1.example.com --ip 192.168.1.10",
@@ -79,6 +89,13 @@ Arguments:
 			"deduplicator manage path-add \"Backup1\" \"HomeDir\" \"/home/user\"",
 			"deduplicator manage path-edit \"Backup1\" \"HomeDir\" \"/mnt/storage\"",
 			"deduplicator manage path-delete \"Backup1\" \"HomeDir\"",
+			"deduplicator manage group-add photos --min-copies 2 --max-copies 3 --description \"Family photos\"",
+			"deduplicator manage group-list",
+			"deduplicator manage group-show photos",
+			"deduplicator manage group-add-path photos brain photos --priority 10",
+			"deduplicator manage group-add-path photos pinky photos --priority 50",
+			"deduplicator manage group-remove-path brain photos",
+			"deduplicator manage group-delete photos",
 		},
 	},
 	{

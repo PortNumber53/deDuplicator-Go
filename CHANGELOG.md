@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [1.4.0] - 2026-01-02
 
 ### Added
 - **Path Grouping Feature**: Group paths across multiple hosts for load-balanced deduplication
@@ -11,6 +11,7 @@
   - Respects min/max copy limits per group
   - Supports dry-run mode for safe testing
   - Migration: `000005_add_path_groups.up.sql`
+  - Updated help text to include path group commands
 
 ### Fixed
 - Fixed Jenkins deployment failure on ARM64 hosts (rpi4)
