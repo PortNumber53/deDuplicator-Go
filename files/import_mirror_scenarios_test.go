@@ -183,7 +183,7 @@ func TestImportSkipsExistingAndHashesNewFiles(t *testing.T) {
 			AddRow(1, "Backup1", lower, "/backups", []byte(`{"paths":{"photos":"`+destRoot+`"}}`)))
 
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM files WHERE hash = \\$1 AND hostname = \\$2").
-		WithArgs(sqlmock.AnyArg(), "Backup1").
+		WithArgs(sqlmock.AnyArg(), lower).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 
 	mock.ExpectExec("INSERT INTO files").
@@ -339,7 +339,7 @@ func TestImportAgeAndRemoveSourceRules(t *testing.T) {
 			AddRow(1, "Backup1", lower, "/backups", []byte(`{"paths":{"photos":"`+destRoot+`"}}`)))
 
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM files WHERE hash = \\$1 AND hostname = \\$2").
-		WithArgs(sqlmock.AnyArg(), "Backup1").
+		WithArgs(sqlmock.AnyArg(), lower).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 
 	mock.ExpectExec("INSERT INTO files").
