@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+	"strings"
 
 	"github.com/DATA-DOG/go-sqlmock"
 )
@@ -38,6 +39,7 @@ func TestPruneNonExistentFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to get hostname: %v", err)
 	}
+	hostname = strings.ToLower(hostname)
 
 	// Set up expectations for the host query
 	hostRows := sqlmock.NewRows([]string{"id", "name", "hostname", "ip", "root_path", "settings", "created_at"}).
@@ -103,6 +105,7 @@ func TestPruneNonExistentFilesHostNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to get hostname: %v", err)
 	}
+	hostname = strings.ToLower(hostname)
 
 	// Set up expectations for the host query to return no rows
 	mock.ExpectQuery(`SELECT id, name, hostname, ip, root_path, settings, created_at FROM hosts WHERE LOWER\(hostname\) = LOWER\(\$1\)`).
@@ -150,6 +153,7 @@ func TestPruneNonExistentFilesDeviceFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to get hostname: %v", err)
 	}
+	hostname = strings.ToLower(hostname)
 
 	// Set up expectations for the host query
 	hostRows := sqlmock.NewRows([]string{"id", "name", "hostname", "ip", "root_path", "settings", "created_at"}).

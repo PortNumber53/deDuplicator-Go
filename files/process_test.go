@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"strings"
 
 	"github.com/DATA-DOG/go-sqlmock"
 )
@@ -50,6 +51,7 @@ func TestProcessStdinWithMockDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to get hostname: %v", err)
 	}
+	hostname = strings.ToLower(hostname)
 
 	// Set up expectations for the host query
 	hostRows := sqlmock.NewRows([]string{"name"}).
@@ -116,6 +118,7 @@ func TestProcessStdinHostNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to get hostname: %v", err)
 	}
+	hostname = strings.ToLower(hostname)
 
 	// Set up expectations for the host query to return no rows
 	mock.ExpectQuery("SELECT name FROM hosts WHERE LOWER\\(hostname\\) = LOWER\\(\\$1\\)").
@@ -168,6 +171,7 @@ func TestProcessStdinEmptyInput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to get hostname: %v", err)
 	}
+	hostname = strings.ToLower(hostname)
 
 	// Set up expectations for the host query
 	hostRows := sqlmock.NewRows([]string{"name"}).
@@ -327,6 +331,7 @@ func TestProcessStdinWithMockDBNoHost(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to get hostname: %v", err)
 	}
+	hostname = strings.ToLower(hostname)
 
 	// Set up expectations for the host query with no results
 	mock.ExpectQuery("SELECT name FROM hosts WHERE LOWER\\(hostname\\) = LOWER\\(\\$1\\)").
@@ -380,6 +385,7 @@ func TestProcessStdinWithMockDBError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to get hostname: %v", err)
 	}
+	hostname = strings.ToLower(hostname)
 
 	// Set up expectations for the host query with an error
 	mock.ExpectQuery("SELECT name FROM hosts WHERE LOWER\\(hostname\\) = LOWER\\(\\$1\\)").
