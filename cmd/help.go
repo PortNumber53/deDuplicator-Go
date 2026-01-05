@@ -33,12 +33,17 @@ func PrintUsage(version string) {
 	fmt.Println("  DB_USER          PostgreSQL user (default: postgres)")
 	fmt.Println("  DB_PASSWORD      PostgreSQL password")
 	fmt.Println("  DB_NAME          PostgreSQL database name (default: deduplicator)")
+	fmt.Println("  DB_URL           Optional database URL (overrides individual DB_* values when used by your scripts)")
 	fmt.Println("  RABBITMQ_HOST    RabbitMQ host (optional)")
 	fmt.Println("  RABBITMQ_PORT    RabbitMQ port (default: 5672)")
 	fmt.Println("  RABBITMQ_VHOST   RabbitMQ vhost")
 	fmt.Println("  RABBITMQ_USER    RabbitMQ username")
 	fmt.Println("  RABBITMQ_PASSWORD RabbitMQ password")
 	fmt.Println("  RABBITMQ_QUEUE   RabbitMQ queue name (default: dedup_backup)")
+	fmt.Println("  DEDUPLICATOR_LOCK_DIR    Override lock directory for flow locks")
+	fmt.Println("  LOCAL_MIGRATE_LOCK_DIR   Override lock directory for local migration lock")
+	fmt.Println("  LOG_FILE         Log file path (default: /var/log/dedupe/dedupe.log)")
+	fmt.Println("  ERROR_LOG_FILE   Error log file path (default: /var/log/dedupe/error.log)")
 }
 
 // ShowCommandHelp shows detailed help for a specific command
