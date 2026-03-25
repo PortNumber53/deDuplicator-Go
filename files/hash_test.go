@@ -136,6 +136,46 @@ func TestHashFilesHostNotFound(t *testing.T) {
 	}
 }
 
+func TestHashFilesBatchQueryDoesNotBreakWithLocalEnvironmentLimit(t *testing.T) {
+	t.Setenv("ENVIRONMENT", "local")
+
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	if err != nil {
+		t.Fatalf("Failed to create mock database: %v", err)
+	}
+	defer db.Close()
+
+	hostRows := sqlmock.NewRows([]string{"id", "name", "hostname", "ip", "root_path", "settings", "created_at"}).
+		AddRow(1, "testhost", "testhost", "", "/test/path", []byte(`{}`), time.Now())
+	mock.ExpectQuery(`SELECT id, name, hostname, ip, root_path, settings, created_at FROM hosts WHERE LOWER\(hostname\) = LOWER\(\$1\)`).
+		WithArgs("testhost").
+		WillReturnRows(hostRows)
+
+	countRows := sqlmock.NewRows([]string{"count"}).AddRow(1)
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM \(.*WHERE LOWER\(hostname\) = LOWER\(\$1\) AND hash IS NULL.*\) AS subquery`).
+		WithArgs("testhost").
+		WillReturnRows(countRows)
+
+	mock.ExpectPrepare(`UPDATE files SET hash = \$1, last_hashed_at = NOW\(\) WHERE id = \$2`)
+	mock.ExpectPrepare(`UPDATE files SET hash = 'TIMEOUT_ERROR', last_hashed_at = NOW\(\) WHERE id = \$1`)
+
+	// Regression assertion: batch query appends ORDER/LIMIT once at the end
+	// and does not inherit an earlier LIMIT from local ENV logic.
+	emptyBatchRows := sqlmock.NewRows([]string{"id", "path", "root_folder"})
+	mock.ExpectQuery(`SELECT id, path, root_folder FROM files WHERE LOWER\(hostname\) = LOWER\(\$1\) AND hash IS NULL AND id > \$2 ORDER BY id ASC LIMIT 100`).
+		WithArgs("testhost", 0).
+		WillReturnRows(emptyBatchRows)
+
+	err = HashFiles(context.Background(), db, HashOptions{Server: "testhost"})
+	if err != nil {
+		t.Fatalf("HashFiles returned error: %v", err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("Unfulfilled expectations: %v", err)
+	}
+}
+
 func TestHashFilesProcessing(t *testing.T) {
 	// Skip this test for now as it's causing issues with SQL formatting
 	t.Skip("Skipping test due to SQL formatting issues")

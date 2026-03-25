@@ -44,8 +44,6 @@ func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
 			query += ` AND hash IS NULL`
 		}
 	}
-	query += getRowLimitClause()
-
 	// First, count total files to process
 	var totalFiles int64
 	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM (%s) AS subquery", query)
@@ -139,6 +137,7 @@ func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
 
 			// Update lastID to the current file's id
 			lastID = id
+			fileCount++
 
 			// Construct the full dbPath from root_folder + dbPath
 			fullPath := filepath.Join(rootFolder.String, dbPath)
