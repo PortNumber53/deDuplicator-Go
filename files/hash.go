@@ -14,6 +14,49 @@ import (
 	"github.com/schollz/progressbar/v3"
 )
 
+func buildHashWhereClause(opts HashOptions) string {
+	// Base: filter to the target hostname (case-insensitive).
+	whereClause := `
+		WHERE LOWER(hostname) = LOWER($1)
+	`
+
+	// If --refresh is set, we intentionally don't add any hash-related predicate.
+	if !opts.Refresh {
+		if opts.RetryProblematic && opts.Renew {
+			whereClause += ` AND (hash IS NULL OR hash = 'TIMEOUT_ERROR' OR last_hashed_at < NOW() - INTERVAL '1 week')`
+		} else if opts.RetryProblematic {
+			whereClause += ` AND (hash IS NULL OR hash = 'TIMEOUT_ERROR')`
+		} else if opts.Renew {
+			whereClause += ` AND (hash IS NULL OR last_hashed_at < NOW() - INTERVAL '1 week')`
+		} else {
+			whereClause += ` AND hash IS NULL`
+		}
+	}
+
+	return whereClause
+}
+
+func buildHashNextSizeQuery(whereClause string) string {
+	return fmt.Sprintf(
+		`SELECT COALESCE(size, -1)
+		FROM files %s AND id > $2
+		ORDER BY COALESCE(size, -1) DESC, id ASC
+		LIMIT 1`,
+		whereClause,
+	)
+}
+
+func buildHashInnerBatchQuery(whereClause string, batchSize int) string {
+	return fmt.Sprintf(
+		`SELECT id, path, root_folder
+		FROM files %s AND COALESCE(size, -1) = $3 AND id > $2
+		ORDER BY id ASC
+		LIMIT %d`,
+		whereClause,
+		batchSize,
+	)
+}
+
 // HashFiles calculates hashes for files in the database
 func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
 	// Get host information by hostname (case-insensitive)
@@ -27,26 +70,13 @@ func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
 	}
 	hostname := host.Hostname
 
-	// Build query based on options
-	query := `
-		SELECT id, path, root_folder
-		FROM files
-		WHERE LOWER(hostname) = LOWER($1)
-	`
-	if !opts.Refresh {
-		if opts.RetryProblematic && opts.Renew {
-			query += ` AND (hash IS NULL OR hash = 'TIMEOUT_ERROR' OR last_hashed_at < NOW() - INTERVAL '1 week')`
-		} else if opts.RetryProblematic {
-			query += ` AND (hash IS NULL OR hash = 'TIMEOUT_ERROR')`
-		} else if opts.Renew {
-			query += ` AND (hash IS NULL OR last_hashed_at < NOW() - INTERVAL '1 week')`
-		} else {
-			query += ` AND hash IS NULL`
-		}
-	}
+	// Build base WHERE clause (no SELECT list) based on options.
+	// We batch using `id > lastID` so we don't re-process rows even if the filter
+	// would still match after updating their hash (notably for --retry-problematic).
+	whereClause := buildHashWhereClause(opts)
 	// First, count total files to process
 	var totalFiles int64
-	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM (%s) AS subquery", query)
+	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM files %s", whereClause)
 	err = sqldb.QueryRow(countQuery, hostname).Scan(&totalFiles)
 	if err != nil {
 		return fmt.Errorf("error counting files: %v", err)
@@ -111,17 +141,31 @@ func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
 		default:
 		}
 
-		// Query a batch of files using id > lastID
-		batchQuery := fmt.Sprintf("%s AND id > $2 ORDER BY id ASC LIMIT %d", query, batchSize)
-		rows, err := sqldb.Query(batchQuery, hostname, lastID)
+		// Pick the next size group to process (largest remaining effective size first).
+		// `COALESCE(size, -1)` ensures NULL sizes are grouped deterministically.
+		var targetEffectiveSize int64
+		nextSizeQuery := buildHashNextSizeQuery(whereClause)
+		err := sqldb.QueryRow(nextSizeQuery, hostname, lastID).Scan(&targetEffectiveSize)
+		if err == sql.ErrNoRows {
+			break
+		}
 		if err != nil {
-			return fmt.Errorf("error querying files: %v", err)
+			return fmt.Errorf("error selecting next size group: %v", err)
 		}
 
-		fileCount := 0
-		for rows.Next() {
+		// Process this size group in batches until it is exhausted.
+		for {
+			innerBatchQuery := buildHashInnerBatchQuery(whereClause, batchSize)
+			rows, err := sqldb.Query(innerBatchQuery, hostname, lastID, targetEffectiveSize)
+			if err != nil {
+				return fmt.Errorf("error querying files: %v", err)
+			}
+
+			fileCount := 0
+			for rows.Next() {
 			select {
 			case <-ctx.Done():
+				rows.Close()
 				// fmt.Printf("\nOperation cancelled after processing %d files\n", processed)
 				return fmt.Errorf("operation cancelled")
 			default:
@@ -184,15 +228,22 @@ func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
 			}
 		}
 
-		rows.Close()
+			rows.Close()
 
-		if err := rows.Err(); err != nil {
-			return fmt.Errorf("error iterating rows: %v", err)
-		}
+			if err := rows.Err(); err != nil {
+				return fmt.Errorf("error iterating rows: %v", err)
+			}
 
-		// If we got fewer files than the batch size, we're done
-		if fileCount < batchSize {
-			break
+			if fileCount < batchSize {
+				// Size group exhausted.
+				break
+			}
+			// Otherwise, continue fetching the next page of the same size group.
+			// (`lastID` will have been advanced to the max id we just processed.)
+			if fileCount == 0 {
+				// Defensive fallback: avoid tight loops if the DB changes unexpectedly.
+				break
+			}
 		}
 	}
 

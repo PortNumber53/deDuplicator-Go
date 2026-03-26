@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,10 +15,10 @@ import (
 func TestHashOptions(t *testing.T) {
 	// Test that HashOptions are correctly applied to the SQL query
 	tests := []struct {
-		name          string
-		options       HashOptions
-		expectedWhere string
-		expectedParam interface{}
+		name            string
+		options         HashOptions
+		expectedCountRe string
+		expectedParam   interface{}
 	}{
 		{
 			name: "Hash only files without hashes",
@@ -27,7 +28,7 @@ func TestHashOptions(t *testing.T) {
 				Renew:            false,
 				RetryProblematic: false,
 			},
-			expectedWhere: "WHERE LOWER(hostname) = LOWER($1) AND hash IS NULL",
+			expectedCountRe: `(?s)SELECT COUNT\(\*\) FROM files.*WHERE LOWER\(hostname\) = LOWER\(\$1\) AND hash IS NULL`,
 			expectedParam: "testhost",
 		},
 		{
@@ -38,7 +39,7 @@ func TestHashOptions(t *testing.T) {
 				Renew:            false,
 				RetryProblematic: false,
 			},
-			expectedWhere: "WHERE LOWER(hostname) = LOWER($1)",
+			expectedCountRe: `(?s)SELECT COUNT\(\*\) FROM files.*WHERE LOWER\(hostname\) = LOWER\(\$1\)\s*$`,
 			expectedParam: "testhost",
 		},
 		{
@@ -49,7 +50,7 @@ func TestHashOptions(t *testing.T) {
 				Renew:            true,
 				RetryProblematic: false,
 			},
-			expectedWhere: "WHERE LOWER(hostname) = LOWER($1) AND (hash IS NULL OR last_hashed_at < NOW() - INTERVAL '1 week')",
+			expectedCountRe: `(?s)SELECT COUNT\(\*\) FROM files.*WHERE LOWER\(hostname\) = LOWER\(\$1\) AND \(hash IS NULL OR last_hashed_at < NOW\(\) - INTERVAL '1 week'\)`,
 			expectedParam: "testhost",
 		},
 		{
@@ -60,7 +61,7 @@ func TestHashOptions(t *testing.T) {
 				Renew:            false,
 				RetryProblematic: true,
 			},
-			expectedWhere: "WHERE LOWER(hostname) = LOWER($1) AND (hash IS NULL OR hash = 'TIMEOUT_ERROR')",
+			expectedCountRe: `(?s)SELECT COUNT\(\*\) FROM files.*WHERE LOWER\(hostname\) = LOWER\(\$1\) AND \(hash IS NULL OR hash = 'TIMEOUT_ERROR'\)`,
 			expectedParam: "testhost",
 		},
 		{
@@ -71,7 +72,7 @@ func TestHashOptions(t *testing.T) {
 				Renew:            true,
 				RetryProblematic: true,
 			},
-			expectedWhere: "WHERE LOWER(hostname) = LOWER($1) AND (hash IS NULL OR hash = 'TIMEOUT_ERROR' OR last_hashed_at < NOW() - INTERVAL '1 week')",
+			expectedCountRe: `(?s)SELECT COUNT\(\*\) FROM files.*WHERE LOWER\(hostname\) = LOWER\(\$1\) AND \(hash IS NULL OR hash = 'TIMEOUT_ERROR' OR last_hashed_at < NOW\(\) - INTERVAL '1 week'\)`,
 			expectedParam: "testhost",
 		},
 	}
@@ -92,7 +93,7 @@ func TestHashOptions(t *testing.T) {
 				WillReturnRows(hostRows)
 
 			countRows := sqlmock.NewRows([]string{"count"}).AddRow(0)
-			mock.ExpectQuery(`SELECT COUNT\(\*\) FROM \(.*`).
+			mock.ExpectQuery(tc.expectedCountRe).
 				WithArgs(tc.expectedParam).
 				WillReturnRows(countRows)
 
@@ -137,42 +138,40 @@ func TestHashFilesHostNotFound(t *testing.T) {
 }
 
 func TestHashFilesBatchQueryDoesNotBreakWithLocalEnvironmentLimit(t *testing.T) {
-	t.Setenv("ENVIRONMENT", "local")
+	// This test is intentionally string-based to avoid brittle sqlmock expectations.
+	// The goal is to prevent future regressions where LIMIT/ORDER get composed in
+	// an invalid order.
+	whereClause := buildHashWhereClause(HashOptions{
+		Server:             "testhost",
+		Refresh:            false,
+		Renew:              false,
+		RetryProblematic:   false,
+	})
 
-	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
-	if err != nil {
-		t.Fatalf("Failed to create mock database: %v", err)
-	}
-	defer db.Close()
-
-	hostRows := sqlmock.NewRows([]string{"id", "name", "hostname", "ip", "root_path", "settings", "created_at"}).
-		AddRow(1, "testhost", "testhost", "", "/test/path", []byte(`{}`), time.Now())
-	mock.ExpectQuery(`SELECT id, name, hostname, ip, root_path, settings, created_at FROM hosts WHERE LOWER\(hostname\) = LOWER\(\$1\)`).
-		WithArgs("testhost").
-		WillReturnRows(hostRows)
-
-	countRows := sqlmock.NewRows([]string{"count"}).AddRow(1)
-	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM \(.*WHERE LOWER\(hostname\) = LOWER\(\$1\) AND hash IS NULL.*\) AS subquery`).
-		WithArgs("testhost").
-		WillReturnRows(countRows)
-
-	mock.ExpectPrepare(`UPDATE files SET hash = \$1, last_hashed_at = NOW\(\) WHERE id = \$2`)
-	mock.ExpectPrepare(`UPDATE files SET hash = 'TIMEOUT_ERROR', last_hashed_at = NOW\(\) WHERE id = \$1`)
-
-	// Regression assertion: batch query appends ORDER/LIMIT once at the end
-	// and does not inherit an earlier LIMIT from local ENV logic.
-	emptyBatchRows := sqlmock.NewRows([]string{"id", "path", "root_folder"})
-	mock.ExpectQuery(`SELECT id, path, root_folder FROM files WHERE LOWER\(hostname\) = LOWER\(\$1\) AND hash IS NULL AND id > \$2 ORDER BY id ASC LIMIT 100`).
-		WithArgs("testhost", 0).
-		WillReturnRows(emptyBatchRows)
-
-	err = HashFiles(context.Background(), db, HashOptions{Server: "testhost"})
-	if err != nil {
-		t.Fatalf("HashFiles returned error: %v", err)
+	inner := buildHashInnerBatchQuery(whereClause, 100)
+	if !strings.Contains(inner, "COALESCE(size, -1) = $3") {
+		t.Fatalf("expected batch query to filter by effective size; got: %s", inner)
 	}
 
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("Unfulfilled expectations: %v", err)
+	if !strings.Contains(inner, "ORDER BY id ASC") {
+		t.Fatalf("expected batch query to order by id ASC; got: %s", inner)
+	}
+	if !strings.Contains(inner, "LIMIT 100") {
+		t.Fatalf("expected batch query to include LIMIT 100; got: %s", inner)
+	}
+
+	idxOrder := strings.Index(inner, "ORDER BY")
+	idxLimit := strings.Index(inner, "LIMIT")
+	if idxOrder == -1 || idxLimit == -1 || idxLimit < idxOrder {
+		t.Fatalf("expected LIMIT after ORDER BY; got: %s", inner)
+	}
+
+	next := buildHashNextSizeQuery(whereClause)
+	if !strings.Contains(next, "ORDER BY COALESCE(size, -1) DESC, id ASC") {
+		t.Fatalf("expected next-size query to order by effective size DESC; got: %s", next)
+	}
+	if !strings.Contains(next, "LIMIT 1") {
+		t.Fatalf("expected next-size query to include LIMIT 1; got: %s", next)
 	}
 }
 

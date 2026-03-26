@@ -20,7 +20,7 @@ import (
 )
 
 // VERSION represents the current version of the deduplicator tool
-const VERSION = "1.4.1"
+const VERSION = "1.4.2"
 
 func main() {
 	loadConfigINI("/etc/dedupe/config.ini")

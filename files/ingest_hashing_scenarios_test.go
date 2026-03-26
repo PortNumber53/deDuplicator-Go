@@ -132,7 +132,7 @@ func TestHashFilesOnlyUnhashedByDefault(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "hostname", "ip", "root_path", "settings", "created_at"}).
 			AddRow(1, "Backup1", "backup1.local", "", "/root", []byte(`{}`), time.Now()))
 
-	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\) FROM \(.*hash IS NULL`).
+	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\) FROM files.*WHERE LOWER\(hostname\) = LOWER\(\$1\) AND hash IS NULL`).
 		WithArgs("backup1.local").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 
@@ -163,7 +163,7 @@ func TestHashFilesRetriesProblematic(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "hostname", "ip", "root_path", "settings", "created_at"}).
 			AddRow(1, "Backup1", "backup1.local", "", "/root", []byte(`{}`), time.Now()))
 
-	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\) FROM \(.*hash = 'TIMEOUT_ERROR'`).
+	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\) FROM files.*WHERE LOWER\(hostname\) = LOWER\(\$1\) AND \(hash IS NULL OR hash = 'TIMEOUT_ERROR'\)`).
 		WithArgs("backup1.local").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 
@@ -194,7 +194,7 @@ func TestHashFilesForceRehashesExisting(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "hostname", "ip", "root_path", "settings", "created_at"}).
 			AddRow(1, "Backup1", "backup1.local", "", "/root", []byte(`{}`), time.Now()))
 
-	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\) FROM \( SELECT id, path, root_folder FROM files`).
+	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\) FROM files.*WHERE LOWER\(hostname\) = LOWER\(\$1\)`).
 		WithArgs("backup1.local").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 
