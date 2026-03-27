@@ -5,11 +5,11 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"math/rand"
 	"time"
 )
 
@@ -58,6 +58,7 @@ func FindDuplicateGroups(ctx context.Context, db *sql.DB, hostname string, minSi
 			SELECT hash, COUNT(*) as count, SUM(size) as total_size
 			FROM files
 			WHERE hash IS NOT NULL
+			AND hash NOT IN ('TIMEOUT_ERROR', 'HASH_ERROR')
 			AND LOWER(hostname) = LOWER($1)
 	`
 	var args []interface{}

@@ -23,9 +23,9 @@ func buildHashWhereClause(opts HashOptions) string {
 	// If --refresh is set, we intentionally don't add any hash-related predicate.
 	if !opts.Refresh {
 		if opts.RetryProblematic && opts.Renew {
-			whereClause += ` AND (hash IS NULL OR hash = 'TIMEOUT_ERROR' OR last_hashed_at < NOW() - INTERVAL '1 week')`
+			whereClause += ` AND (hash IS NULL OR hash IN ('TIMEOUT_ERROR', 'HASH_ERROR') OR last_hashed_at < NOW() - INTERVAL '1 week')`
 		} else if opts.RetryProblematic {
-			whereClause += ` AND (hash IS NULL OR hash = 'TIMEOUT_ERROR')`
+			whereClause += ` AND (hash IS NULL OR hash IN ('TIMEOUT_ERROR', 'HASH_ERROR'))`
 		} else if opts.Renew {
 			whereClause += ` AND (hash IS NULL OR last_hashed_at < NOW() - INTERVAL '1 week')`
 		} else {
@@ -40,7 +40,13 @@ func buildHashNextSizeQuery(whereClause string) string {
 	return fmt.Sprintf(
 		`SELECT COALESCE(size, -1)
 		FROM files %s AND id > $2
-		ORDER BY COALESCE(size, -1) DESC, id ASC
+		ORDER BY 
+			CASE 
+				WHEN hash IN ('TIMEOUT_ERROR', 'HASH_ERROR') THEN 0 
+				ELSE 1 
+			END,
+			COALESCE(size, -1) DESC, 
+			id ASC
 		LIMIT 1`,
 		whereClause,
 	)
@@ -50,7 +56,12 @@ func buildHashInnerBatchQuery(whereClause string, batchSize int) string {
 	return fmt.Sprintf(
 		`SELECT id, path, root_folder
 		FROM files %s AND COALESCE(size, -1) = $3 AND id > $2
-		ORDER BY id ASC
+		ORDER BY 
+			CASE 
+				WHEN hash IN ('TIMEOUT_ERROR', 'HASH_ERROR') THEN 0 
+				ELSE 1 
+			END,
+			id ASC
 		LIMIT %d`,
 		whereClause,
 		batchSize,
@@ -112,7 +123,7 @@ func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
 	}
 	defer stmt.Close()
 
-	// Prepare statement to mark problematic files
+	// Prepare statement to mark files that timed out
 	skipStmt, err := sqldb.Prepare(`
 		UPDATE files
 		SET hash = 'TIMEOUT_ERROR', last_hashed_at = NOW()
@@ -122,6 +133,17 @@ func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
 		return fmt.Errorf("error preparing skip statement: %v", err)
 	}
 	defer skipStmt.Close()
+
+	// Prepare statement to mark files that errored (non-timeout)
+	hashErrStmt, err := sqldb.Prepare(`
+		UPDATE files
+		SET hash = 'HASH_ERROR', last_hashed_at = NOW()
+		WHERE id = $1
+	`)
+	if err != nil {
+		return fmt.Errorf("error preparing hash error statement: %v", err)
+	}
+	defer hashErrStmt.Close()
 
 	// Instead of querying all files at once, we'll fetch them in batches
 	// to avoid keeping all file records in memory
@@ -163,70 +185,74 @@ func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
 
 			fileCount := 0
 			for rows.Next() {
-			select {
-			case <-ctx.Done():
-				rows.Close()
-				// fmt.Printf("\nOperation cancelled after processing %d files\n", processed)
-				return fmt.Errorf("operation cancelled")
-			default:
-			}
-			var id int
-			var dbPath string
-			var rootFolder sql.NullString
-			err := rows.Scan(&id, &dbPath, &rootFolder)
-			if err != nil {
-				logging.InfoLogger.Printf("Warning: Error scanning row: %v", err)
-				continue
-			}
-
-			// Update lastID to the current file's id
-			lastID = id
-			fileCount++
-
-			// Construct the full dbPath from root_folder + dbPath
-			fullPath := filepath.Join(rootFolder.String, dbPath)
-
-			// Display the file name before hashing
-			logging.InfoLogger.Printf("Hashing file: %s", filepath.Base(dbPath))
-
-			// Calculate hash - this will block until the hash is complete or times out
-			hash, err := calculateFileHash(fullPath)
-			if err != nil {
-				if strings.Contains(err.Error(), "hashing timed out") || strings.Contains(err.Error(), "hashing operation cancelled") {
-					logging.InfoLogger.Printf("Warning: Timeout while hashing file %s: %v", dbPath, err)
-					// Mark file as problematic in the database
-					_, dbErr := skipStmt.Exec(id)
-					if dbErr != nil {
-						logging.InfoLogger.Printf("Warning: Error marking file as problematic: %v", dbErr)
-					} else {
-						skipped++
-						logging.InfoLogger.Printf("Marked file as problematic: %s", dbPath)
-					}
-				} else {
-					logging.InfoLogger.Printf("Warning: Error hashing file %s: %v", dbPath, err)
+				select {
+				case <-ctx.Done():
+					rows.Close()
+					// fmt.Printf("\nOperation cancelled after processing %d files\n", processed)
+					return fmt.Errorf("operation cancelled")
+				default:
 				}
+				var id int
+				var dbPath string
+				var rootFolder sql.NullString
+				err := rows.Scan(&id, &dbPath, &rootFolder)
+				if err != nil {
+					logging.InfoLogger.Printf("Warning: Error scanning row: %v", err)
+					continue
+				}
+
+				// Update lastID to the current file's id
+				lastID = id
+				fileCount++
+
+				// Construct the full dbPath from root_folder + dbPath
+				fullPath := filepath.Join(rootFolder.String, dbPath)
+
+				// Display the file name before hashing
+				logging.InfoLogger.Printf("Hashing file: %s", filepath.Base(dbPath))
+
+				// Calculate hash - this will block until the hash is complete or times out
+				hash, err := calculateFileHash(fullPath)
+				if err != nil {
+					if strings.Contains(err.Error(), "hashing timed out") || strings.Contains(err.Error(), "hashing operation cancelled") {
+						logging.InfoLogger.Printf("Warning: Timeout while hashing file %s: %v", dbPath, err)
+						// Mark file as problematic in the database
+						_, dbErr := skipStmt.Exec(id)
+						if dbErr != nil {
+							logging.InfoLogger.Printf("Warning: Error marking file as problematic: %v", dbErr)
+						} else {
+							skipped++
+							logging.InfoLogger.Printf("Marked file as problematic: %s", dbPath)
+						}
+					} else {
+						logging.InfoLogger.Printf("Warning: Error hashing file %s: %v", dbPath, err)
+						_, dbErr := hashErrStmt.Exec(id)
+						if dbErr != nil {
+							logging.InfoLogger.Printf("Warning: Error marking file as hash error: %v", dbErr)
+						}
+					}
+					bar.Add(1)
+					continue
+				}
+
+				// Update database
+				_, err = stmt.Exec(hash, id)
+				if err != nil {
+					logging.InfoLogger.Printf("Warning: Error updating hash for file %s: %v", dbPath, err)
+					continue
+				}
+
+				processed++
 				bar.Add(1)
-				continue
-			}
 
-			// Update database
-			_, err = stmt.Exec(hash, id)
-			if err != nil {
-				logging.InfoLogger.Printf("Warning: Error updating hash for file %s: %v", dbPath, err)
-				continue
+				// Check for context cancellation after each file
+				select {
+				case <-ctx.Done():
+					rows.Close()
+					return fmt.Errorf("operation cancelled after processing %d of %d files", processed+skipped, totalFiles)
+				default:
+				}
 			}
-
-			processed++
-			bar.Add(1)
-
-			// Check for context cancellation after each file
-			select {
-			case <-ctx.Done():
-				rows.Close()
-				return fmt.Errorf("operation cancelled after processing %d of %d files", processed+skipped, totalFiles)
-			default:
-			}
-		}
 
 			rows.Close()
 
