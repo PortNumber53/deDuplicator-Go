@@ -23,57 +23,57 @@ func TestHashOptions(t *testing.T) {
 		{
 			name: "Hash only files without hashes",
 			options: HashOptions{
-				Server:             "testhost",
+				Server:           "testhost",
 				Refresh:          false,
 				Renew:            false,
 				RetryProblematic: false,
 			},
 			expectedCountRe: `(?s)SELECT COUNT\(\*\) FROM files.*WHERE LOWER\(hostname\) = LOWER\(\$1\) AND hash IS NULL`,
-			expectedParam: "testhost",
+			expectedParam:   "testhost",
 		},
 		{
 			name: "Refresh all files",
 			options: HashOptions{
-				Server:             "testhost",
+				Server:           "testhost",
 				Refresh:          true,
 				Renew:            false,
 				RetryProblematic: false,
 			},
 			expectedCountRe: `(?s)SELECT COUNT\(\*\) FROM files.*WHERE LOWER\(hostname\) = LOWER\(\$1\)\s*$`,
-			expectedParam: "testhost",
+			expectedParam:   "testhost",
 		},
 		{
 			name: "Renew old hashes",
 			options: HashOptions{
-				Server:             "testhost",
+				Server:           "testhost",
 				Refresh:          false,
 				Renew:            true,
 				RetryProblematic: false,
 			},
 			expectedCountRe: `(?s)SELECT COUNT\(\*\) FROM files.*WHERE LOWER\(hostname\) = LOWER\(\$1\) AND \(hash IS NULL OR last_hashed_at < NOW\(\) - INTERVAL '1 week'\)`,
-			expectedParam: "testhost",
+			expectedParam:   "testhost",
 		},
 		{
 			name: "Retry problematic files",
 			options: HashOptions{
-				Server:             "testhost",
+				Server:           "testhost",
 				Refresh:          false,
 				Renew:            false,
 				RetryProblematic: true,
 			},
-			expectedCountRe: `(?s)SELECT COUNT\(\*\) FROM files.*WHERE LOWER\(hostname\) = LOWER\(\$1\) AND \(hash IS NULL OR hash = 'TIMEOUT_ERROR'\)`,
-			expectedParam: "testhost",
+			expectedCountRe: `(?s)SELECT COUNT\(\*\) FROM files.*WHERE LOWER\(hostname\) = LOWER\(\$1\) AND \(hash IS NULL OR hash IN \('TIMEOUT_ERROR', 'HASH_ERROR'\)\)`,
+			expectedParam:   "testhost",
 		},
 		{
 			name: "Retry problematic and renew old hashes",
 			options: HashOptions{
-				Server:             "testhost",
+				Server:           "testhost",
 				Refresh:          false,
 				Renew:            true,
 				RetryProblematic: true,
 			},
-			expectedCountRe: `(?s)SELECT COUNT\(\*\) FROM files.*WHERE LOWER\(hostname\) = LOWER\(\$1\) AND \(hash IS NULL OR hash = 'TIMEOUT_ERROR' OR last_hashed_at < NOW\(\) - INTERVAL '1 week'\)`,
-			expectedParam: "testhost",
+			expectedCountRe: `(?s)SELECT COUNT\(\*\) FROM files.*WHERE LOWER\(hostname\) = LOWER\(\$1\) AND \(hash IS NULL OR hash IN \('TIMEOUT_ERROR', 'HASH_ERROR'\) OR last_hashed_at < NOW\(\) - INTERVAL '1 week'\)`,
+			expectedParam:   "testhost",
 		},
 	}
 
@@ -142,10 +142,10 @@ func TestHashFilesBatchQueryDoesNotBreakWithLocalEnvironmentLimit(t *testing.T) 
 	// The goal is to prevent future regressions where LIMIT/ORDER get composed in
 	// an invalid order.
 	whereClause := buildHashWhereClause(HashOptions{
-		Server:             "testhost",
-		Refresh:            false,
-		Renew:              false,
-		RetryProblematic:   false,
+		Server:           "testhost",
+		Refresh:          false,
+		Renew:            false,
+		RetryProblematic: false,
 	})
 
 	inner := buildHashInnerBatchQuery(whereClause, 100)
@@ -153,8 +153,8 @@ func TestHashFilesBatchQueryDoesNotBreakWithLocalEnvironmentLimit(t *testing.T) 
 		t.Fatalf("expected batch query to filter by effective size; got: %s", inner)
 	}
 
-	if !strings.Contains(inner, "ORDER BY id ASC") {
-		t.Fatalf("expected batch query to order by id ASC; got: %s", inner)
+	if !strings.Contains(inner, "ORDER BY") || !strings.Contains(inner, "CASE") || !strings.Contains(inner, "WHEN hash IN ('TIMEOUT_ERROR', 'HASH_ERROR') THEN 0") {
+		t.Fatalf("expected batch query to order by CASE WHEN for error files priority; got: %s", inner)
 	}
 	if !strings.Contains(inner, "LIMIT 100") {
 		t.Fatalf("expected batch query to include LIMIT 100; got: %s", inner)
@@ -167,8 +167,8 @@ func TestHashFilesBatchQueryDoesNotBreakWithLocalEnvironmentLimit(t *testing.T) 
 	}
 
 	next := buildHashNextSizeQuery(whereClause)
-	if !strings.Contains(next, "ORDER BY COALESCE(size, -1) DESC, id ASC") {
-		t.Fatalf("expected next-size query to order by effective size DESC; got: %s", next)
+	if !strings.Contains(next, "ORDER BY") || !strings.Contains(next, "CASE") || !strings.Contains(next, "WHEN hash IN ('TIMEOUT_ERROR', 'HASH_ERROR') THEN 0") {
+		t.Fatalf("expected next-size query to order by CASE WHEN for error files priority; got: %s", next)
 	}
 	if !strings.Contains(next, "LIMIT 1") {
 		t.Fatalf("expected next-size query to include LIMIT 1; got: %s", next)
