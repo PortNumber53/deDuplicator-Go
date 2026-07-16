@@ -162,6 +162,7 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 		retryProblematic := hashCmd.Bool("retry-problematic", false, "Retry files that previously timed out")
 		firstChunk := hashCmd.Bool("first-chunk", false, "Hash only the first 1KiB of files with duplicate sizes")
 		fullHash := hashCmd.Bool("full-hash", false, "Hash full contents for all eligible files")
+		largeFirst := hashCmd.Bool("large-first", false, "Process larger files before smaller files")
 		_ = hashCmd.Int("count", 0, "Process only N files (0 = unlimited)")
 
 		if err := hashCmd.Parse(args[1:]); err != nil {
@@ -206,6 +207,7 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 			RetryProblematic: *retryProblematic,
 			FirstChunk:       *firstChunk,
 			FullHash:         *fullHash,
+			LargeFirst:       *largeFirst,
 		})
 		if err != nil {
 			if strings.Contains(err.Error(), "no files need hashing") || strings.Contains(err.Error(), "No files need hashing") {

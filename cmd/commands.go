@@ -262,7 +262,7 @@ associated with the current host and stored in the database for deduplication.`,
 	{
 		Name:        "hash",
 		Description: "Calculate and update file hashes in the database (deprecated, use 'files hash' instead)",
-		Usage:       "hash [--force] [--renew] [--retry-problematic] [--first-chunk|--full-hash] [--count N]",
+		Usage:       "hash [--force] [--renew] [--retry-problematic] [--first-chunk|--full-hash] [--large-first] [--count N]",
 		Help: `Calculate and store file hashes for deduplication.
 
 Options:
@@ -271,6 +271,7 @@ Options:
   --retry-problematic  Retry files that previously timed out
   --first-chunk        Hash only the first 1KiB of files with duplicate sizes
   --full-hash          Hash full contents for all eligible files
+  --large-first        Process larger files before smaller files
   --count N            Process only N files (0 = unlimited)
 
 Note: This command is deprecated. Please use 'files hash' instead.
@@ -282,6 +283,7 @@ Files are hashed using SHA256 for reliable duplicate detection.`,
 			"deduplicator hash --force",
 			"deduplicator hash --first-chunk",
 			"deduplicator hash --full-hash --force",
+			"deduplicator hash --large-first",
 			"deduplicator hash --retry-problematic",
 			"deduplicator hash --count 1000",
 		},
@@ -358,7 +360,7 @@ Options:
 	{
 		Name:        "files hash",
 		Description: "Calculate and store file hashes for the current host",
-		Usage:       "files hash [--force] [--renew] [--retry-problematic] [--first-chunk|--full-hash]",
+		Usage:       "files hash [--force] [--renew] [--retry-problematic] [--first-chunk|--full-hash] [--large-first]",
 		Help: `Calculate and store file hashes for deduplication (host is inferred from OS hostname).
 
 Options:
@@ -367,6 +369,7 @@ Options:
   --retry-problematic  Retry files that previously timed out
   --first-chunk        Hash only the first 1KiB of files with duplicate sizes
   --full-hash          Hash full contents for all eligible files
+  --large-first        Process larger files before smaller files
 
 By default, only files whose size appears more than once on the host are hashed.
 Use --full-hash --force to rehash every file for the current host.`,
@@ -375,6 +378,7 @@ Use --full-hash --force to rehash every file for the current host.`,
 			"deduplicator files hash --force",
 			"deduplicator files hash --first-chunk",
 			"deduplicator files hash --full-hash --force",
+			"deduplicator files hash --large-first",
 			"deduplicator files hash --retry-problematic",
 		},
 	},

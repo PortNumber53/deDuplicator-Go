@@ -52,6 +52,7 @@ type HashOptions struct {
 	RetryProblematic bool // retry files that previously timed out
 	FirstChunk       bool // hash only the first chunk of candidate files
 	FullHash         bool // hash all eligible files instead of only duplicate-size candidates
+	LargeFirst       bool // process larger files before smaller files
 }
 
 // FindOptions represents options for the find command

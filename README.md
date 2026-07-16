@@ -61,6 +61,7 @@ The deduplicator tool provides several commands to help you manage duplicate fil
         - `--retry-problematic`: Retry files that previously timed out
         - `--first-chunk`: Hash only the first 1KiB of files with duplicate sizes
         - `--full-hash`: Hash full contents for all eligible files
+        - `--large-first`: Process larger files before smaller files
         - `--count N`: Process only N files (0 = unlimited)
     - `import`: Import files from a source directory to a target host
       - Options:
@@ -220,6 +221,9 @@ find . -type f -name "*.jpg" -o -name "*.png" | deduplicator update
 ```bash
 # Hash un-hashed files whose size appears more than once
 deduplicator files hash
+
+# Hash un-hashed duplicate-size files from largest to smallest
+deduplicator files hash --large-first
 
 # Quickly hash only the first 1KiB of un-hashed files whose size appears more than once
 deduplicator files hash --first-chunk

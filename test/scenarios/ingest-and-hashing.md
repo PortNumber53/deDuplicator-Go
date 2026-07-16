@@ -23,6 +23,11 @@ Feature: File ingest and hashing
     When I run `deduplicator files hash --first-chunk`
     Then only rows with NULL hash and a size shared by another file are processed using the first 1KiB
 
+  Scenario: Hashing larger files first
+    Given files rows for host "backup1.local" with some NULL hashes and repeated file sizes
+    When I run `deduplicator files hash --large-first`
+    Then rows with NULL hash and a size shared by another file are processed from largest size to smallest size
+
   Scenario: Full hashing includes unique-size files
     Given files rows for host "backup1.local" with some NULL hashes
     When I run `deduplicator files hash --full-hash`

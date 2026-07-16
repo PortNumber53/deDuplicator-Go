@@ -172,7 +172,7 @@ func TestHashFilesBatchQueryDoesNotBreakWithLocalEnvironmentLimit(t *testing.T) 
 		RetryProblematic: false,
 	})
 
-	batch := buildHashBatchQuery(whereClause, 100)
+	batch := buildHashBatchQuery(whereClause, 100, false)
 	if !strings.Contains(batch, "id > $2") {
 		t.Fatalf("expected batch query to use an id bookmark; got: %s", batch)
 	}
@@ -188,6 +188,27 @@ func TestHashFilesBatchQueryDoesNotBreakWithLocalEnvironmentLimit(t *testing.T) 
 	idxLimit := strings.Index(batch, "LIMIT")
 	if idxOrder == -1 || idxLimit == -1 || idxLimit < idxOrder {
 		t.Fatalf("expected LIMIT after ORDER BY; got: %s", batch)
+	}
+}
+
+func TestHashFilesLargeFirstBatchQueryUsesSizeBookmark(t *testing.T) {
+	whereClause := buildHashWhereClause(HashOptions{LargeFirst: true})
+
+	batch := buildHashBatchQuery(whereClause, 100, true)
+	if !strings.Contains(batch, "hash IS NULL") {
+		t.Fatalf("large-first mode should still select unhashed files by default; got: %s", batch)
+	}
+	if !strings.Contains(batch, "COALESCE(size, -1) < $2::bigint") {
+		t.Fatalf("expected large-first query to advance by effective size; got: %s", batch)
+	}
+	if !strings.Contains(batch, "COALESCE(size, -1) = $2::bigint AND id > $3") {
+		t.Fatalf("expected large-first query to break equal-size ties by id; got: %s", batch)
+	}
+	if !strings.Contains(batch, "ORDER BY COALESCE(size, -1) DESC, id ASC") {
+		t.Fatalf("expected large-first query to order by size descending then id; got: %s", batch)
+	}
+	if !strings.Contains(batch, "LIMIT 100") {
+		t.Fatalf("expected large-first query to include LIMIT 100; got: %s", batch)
 	}
 }
 

@@ -49,15 +49,38 @@ func buildHashWhereClause(opts HashOptions) string {
 	return whereClause
 }
 
-func buildHashBatchQuery(whereClause string, batchSize int) string {
+func buildHashBatchQuery(whereClause string, batchSize int, largeFirst bool) string {
+	if largeFirst {
+		return fmt.Sprintf(
+			`SELECT id, path, root_folder, COALESCE(size, -1) AS effective_size
+			FROM files %s
+			AND (
+				$2::bigint IS NULL
+				OR COALESCE(size, -1) < $2::bigint
+				OR (COALESCE(size, -1) = $2::bigint AND id > $3)
+			)
+			ORDER BY COALESCE(size, -1) DESC, id ASC
+			LIMIT %d`,
+			whereClause,
+			batchSize,
+		)
+	}
+
 	return fmt.Sprintf(
-		`SELECT id, path, root_folder
+		`SELECT id, path, root_folder, COALESCE(size, -1) AS effective_size
 		FROM files %s AND id > $2
 		ORDER BY id ASC
 		LIMIT %d`,
 		whereClause,
 		batchSize,
 	)
+}
+
+func nullableInt64Value(value sql.NullInt64) interface{} {
+	if !value.Valid {
+		return nil
+	}
+	return value.Int64
 }
 
 // HashFiles calculates hashes for files in the database
@@ -145,13 +168,14 @@ func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
 	// to avoid keeping all file records in memory
 	batchSize := 100
 
-	// Use an ID bookmark for batching instead of OFFSET
+	// Use a keyset bookmark for batching instead of OFFSET.
 	lastID := 0
+	var lastEffectiveSize sql.NullInt64
 
 	// Track statistics
 	var processed, skipped int64
 
-	batchQuery := buildHashBatchQuery(whereClause, batchSize)
+	batchQuery := buildHashBatchQuery(whereClause, batchSize, opts.LargeFirst)
 	for {
 		// Check for context cancellation
 		select {
@@ -160,7 +184,12 @@ func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
 		default:
 		}
 
-		rows, err := sqldb.Query(batchQuery, hostname, lastID)
+		var rows *sql.Rows
+		if opts.LargeFirst {
+			rows, err = sqldb.Query(batchQuery, hostname, nullableInt64Value(lastEffectiveSize), lastID)
+		} else {
+			rows, err = sqldb.Query(batchQuery, hostname, lastID)
+		}
 		if err != nil {
 			return fmt.Errorf("error querying files: %v", err)
 		}
@@ -177,7 +206,8 @@ func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
 			var id int
 			var dbPath string
 			var rootFolder sql.NullString
-			err := rows.Scan(&id, &dbPath, &rootFolder)
+			var effectiveSize int64
+			err := rows.Scan(&id, &dbPath, &rootFolder, &effectiveSize)
 			if err != nil {
 				logging.InfoLogger.Printf("Warning: Error scanning row: %v", err)
 				continue
@@ -185,6 +215,7 @@ func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
 
 			// Update lastID to the current file's id
 			lastID = id
+			lastEffectiveSize = sql.NullInt64{Int64: effectiveSize, Valid: true}
 			fileCount++
 
 			// Construct the full dbPath from root_folder + dbPath
