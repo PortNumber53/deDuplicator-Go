@@ -178,7 +178,7 @@ Options:
 		Name:        "manage path-delete",
 		Description: "Remove a path mapping from a server",
 		Usage:       "manage path-delete <server name> <friendly path name>",
-		Help:        `Remove a friendly path mapping from the specified server.`,
+		Help:        `Remove a friendly path mapping from the specified server and delete indexed file rows whose root_folder matches the removed absolute path.`,
 		Examples: []string{
 			"deduplicator manage path-delete \"Backup1\" \"Photos\"",
 		},

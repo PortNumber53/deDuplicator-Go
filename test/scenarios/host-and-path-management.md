@@ -28,4 +28,10 @@ Feature: Host and path management
     Given host "Backup1" has paths that do not include "docs"
     When I run `deduplicator manage path-delete "Backup1" "docs"`
     Then the command reports the path is not found and leaves settings unchanged
+
+  Scenario: Deleting a friendly path removes indexed files rooted there
+    Given host "Brain" has friendly path "Plex" mapped to "/plex/"
+    And the files table has rows for hostname "brain" with root_folder "/plex/"
+    When I run `deduplicator manage path-delete "Brain" "Plex"`
+    Then the "Plex" path mapping is removed and matching files rows are deleted
 ```

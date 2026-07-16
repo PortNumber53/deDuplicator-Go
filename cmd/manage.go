@@ -233,16 +233,55 @@ func HandleManage(dbConn *sql.DB, args []string) error {
 		if err != nil {
 			return fmt.Errorf("error decoding paths: %v", err)
 		}
-		if _, ok := paths[friendly]; !ok {
+		removedRoot, ok := paths[friendly]
+		if !ok {
 			fmt.Printf("Path '%s' not found for server '%s'\n", friendly, serverName)
 			return nil
 		}
 		delete(paths, friendly)
-		host.SetPaths(paths)
-		if err := db.UpdateHost(dbConn, host.Name, host.Name, host.Hostname, host.IP, host.RootPath, host.Settings); err != nil {
+		if err := host.SetPaths(paths); err != nil {
+			return fmt.Errorf("error encoding paths: %v", err)
+		}
+
+		tx, err := dbConn.Begin()
+		if err != nil {
+			return fmt.Errorf("error starting path delete transaction: %v", err)
+		}
+		defer tx.Rollback()
+
+		result, err := tx.Exec(`
+			UPDATE hosts
+			SET name = $2, hostname = $3, ip = $4, root_path = $5, settings = $6
+			WHERE name = $1
+		`, host.Name, host.Name, strings.ToLower(host.Hostname), host.IP, host.RootPath, host.Settings)
+		if err != nil {
 			return fmt.Errorf("error updating paths: %v", err)
 		}
-		fmt.Printf("Path '%s' deleted from server '%s'\n", friendly, serverName)
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("error checking path update result: %v", err)
+		}
+		if rows == 0 {
+			return fmt.Errorf("host not found: %s", host.Name)
+		}
+
+		deleteResult, err := tx.Exec(`
+			DELETE FROM files
+			WHERE LOWER(hostname) = LOWER($1)
+			AND root_folder = $2
+		`, host.Hostname, removedRoot)
+		if err != nil {
+			return fmt.Errorf("error deleting file rows for path '%s': %v", friendly, err)
+		}
+		deletedRows, err := deleteResult.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("error checking deleted file rows: %v", err)
+		}
+
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("error committing path delete transaction: %v", err)
+		}
+		fmt.Printf("Path '%s' deleted from server '%s'; removed %d file rows rooted at %s\n", friendly, serverName, deletedRows, removedRoot)
 		return nil
 
 	case "path-edit":

@@ -187,3 +187,39 @@ func TestManagePathDeleteMissingIsReported(t *testing.T) {
 		t.Fatalf("expected missing path message, got: %s", output)
 	}
 }
+
+func TestManagePathDeleteRemovesFileRowsForDeletedRoot(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	now := time.Now()
+	mock.ExpectQuery("SELECT id, name, hostname, ip, root_path, settings, created_at FROM hosts WHERE name = \\$1").
+		WithArgs("Brain").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "hostname", "ip", "root_path", "settings", "created_at"}).
+			AddRow(1, "Brain", "brain.local", "10.0.0.10", "", []byte(`{"paths":{"Plex":"/plex/","Storage":"/storage/"}}`), now))
+
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE hosts SET name = \\$2, hostname = \\$3, ip = \\$4, root_path = \\$5, settings = \\$6 WHERE name = \\$1").
+		WithArgs("Brain", "Brain", "brain.local", "10.0.0.10", "", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("DELETE FROM files").
+		WithArgs("brain.local", "/plex/").
+		WillReturnResult(sqlmock.NewResult(0, 42))
+	mock.ExpectCommit()
+
+	output := captureStdout(t, func() {
+		if err := HandleManage(db, []string{"path-delete", "Brain", "Plex"}); err != nil {
+			t.Fatalf("HandleManage path-delete error: %v", err)
+		}
+	})
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+	if !strings.Contains(output, "removed 42 file rows rooted at /plex/") {
+		t.Fatalf("expected deleted file row count, got: %s", output)
+	}
+}
