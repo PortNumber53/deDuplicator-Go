@@ -14,6 +14,13 @@ BINARY_ARM64="${BINARY_ARM64:-dist/deduplicator-linux-arm64}"
 LOCAL_MIGRATE_LOCK_DIR="${LOCAL_MIGRATE_LOCK_DIR:-/tmp/deduplicator-ci}"
 CONFIG_SAMPLE="${CONFIG_SAMPLE:-config.ini.sample}"
 SKIP_TESTS="${SKIP_TESTS:-0}"
+DEPLOY_TEST_CACHE_DIR=""
+
+cleanup_test_cache() {
+  if [[ -n "${DEPLOY_TEST_CACHE_DIR:-}" ]]; then
+    rm -rf "${DEPLOY_TEST_CACHE_DIR}"
+  fi
+}
 
 run_tests() {
   if [[ "${SKIP_TESTS}" == "1" ]]; then
@@ -28,9 +35,12 @@ run_tests() {
 
   echo "Running pre-deploy tests"
   local test_cache
-  test_cache="${GOCACHE:-$(mktemp -d)}"
-  if [[ -z "${GOCACHE:-}" ]]; then
-    trap 'rm -rf "${test_cache}"' EXIT
+  if [[ -n "${GOCACHE:-}" ]]; then
+    test_cache="${GOCACHE}"
+  else
+    DEPLOY_TEST_CACHE_DIR="$(mktemp -d)"
+    test_cache="${DEPLOY_TEST_CACHE_DIR}"
+    trap cleanup_test_cache EXIT
   fi
   GOCACHE="${test_cache}" go test ./...
 }
