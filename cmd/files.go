@@ -265,29 +265,6 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 			return fmt.Errorf("error parsing command flags: %v", err)
 		}
 
-		// Get hostname for current machine
-		hostname, err := os.Hostname()
-		if err != nil {
-			return fmt.Errorf("error getting hostname: %v", err)
-		}
-
-		// Convert hostname to lowercase for consistency
-		hostname = strings.ToLower(hostname)
-
-		// Find host in database by hostname (case-insensitive)
-		var hostName string
-		err = database.QueryRow(`
-			SELECT name
-			FROM hosts
-			WHERE LOWER(hostname) = LOWER($1)
-		`, hostname).Scan(&hostName)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				return fmt.Errorf("no host found for hostname %s, please add it using 'deduplicator manage add'", hostname)
-			}
-			return fmt.Errorf("error finding host: %v", err)
-		}
-
 		var parsedMinSize int64
 		if *minSize != "" {
 			var err error
@@ -338,6 +315,7 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 		target := moveDupesCmd.String("target", "", "Target directory to move duplicates to (required)")
 		dryRun := moveDupesCmd.Bool("dry-run", false, "Show what would be moved without making changes")
 		count := moveDupesCmd.Int("count", 0, "Limit the number of duplicate sets to process (0 = no limit)")
+		minSize := moveDupesCmd.String("min-size", "", "Minimum file size to consider (e.g., \"1M\", \"1.5G\", \"500K\")")
 
 		err = moveDupesCmd.Parse(args[1:])
 		if err != nil {
@@ -348,6 +326,14 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 			return fmt.Errorf("--target is required for move-dupes command")
 		}
 
+		var parsedMinSize int64
+		if *minSize != "" {
+			parsedMinSize, err = files.ParseSize(*minSize)
+			if err != nil {
+				return fmt.Errorf("error parsing min-size: %v", err)
+			}
+		}
+
 		// Create move options
 		moveOpts := files.MoveOptions{
 			TargetDir: *target,
@@ -355,33 +341,10 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 			Count:     *count,
 		}
 
-		// Get hostname for current machine
-		hostname, err := os.Hostname()
-		if err != nil {
-			return fmt.Errorf("error getting hostname: %v", err)
-		}
-
-		// Convert hostname to lowercase for consistency
-		hostname = strings.ToLower(hostname)
-
-		// Find host in database by hostname (case-insensitive)
-		var hostName string
-		err = database.QueryRow(`
-			SELECT name
-			FROM hosts
-			WHERE LOWER(hostname) = LOWER($1)
-		`, hostname).Scan(&hostName)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				return fmt.Errorf("no host found for hostname %s, please add it using 'deduplicator manage add'", hostname)
-			}
-			return fmt.Errorf("error finding host: %v", err)
-		}
-
 		// Call MoveDuplicates with the appropriate options
 		dupOpts := files.DuplicateListOptions{
 			Count:   *count,
-			MinSize: 0, // No minimum size filter
+			MinSize: parsedMinSize,
 		}
 
 		return files.MoveDuplicates(ctx, database, dupOpts, moveOpts)

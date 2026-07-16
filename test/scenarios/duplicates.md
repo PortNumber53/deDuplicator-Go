@@ -3,10 +3,10 @@
 ```gherkin
 Feature: Duplicate detection and movement
 
-  Scenario: Listing duplicates respects min-size and count filters
-    Given files with hashes and sizes on the current host
+  Scenario: Listing duplicates checks across hosts while respecting filters
+    Given files with hashes, sizes, and hostnames across multiple hosts
     When I run `deduplicator files list-dupes --min-size 1048576 --count 2`
-    Then only duplicate groups at least 1MB are shown and at most two groups are printed, ordered by total size
+    Then only cross-host duplicate groups at least 1MB are shown and at most two groups are printed, ordered by total size
 
   Scenario: Dedup dry-run reports potential moves without touching files
     Given duplicate groups exist and destination directory parent exists
@@ -32,4 +32,9 @@ Feature: Duplicate detection and movement
     Given duplicate groups exist
     When I run `deduplicator files move-dupes --target /tmp/dupes --dry-run`
     Then the command prints planned moves using root_folder plus path for sources and does not modify files or database
+
+  Scenario: Move-dupes archives local files under a host folder
+    Given duplicate rows with the same hash and size across hosts "pinky" and "rpi4"
+    When I run `deduplicator files move-dupes --target /tmp/dupes --min-size 10G`
+    Then only files for the current host are moved locally under /tmp/dupes/<host>/ and remote host files are left for their own host to process
 ```

@@ -12,6 +12,14 @@ import (
 	"strings"
 )
 
+type duplicateMoveGroup struct {
+	Hash      string
+	Files     []string
+	Hosts     []string
+	RootPaths []string
+	Size      int64
+}
+
 func MoveDuplicates(ctx context.Context, db *sql.DB, opts DuplicateListOptions, moveOpts MoveOptions) error {
 	// Create target directory if it doesn't exist
 	if !moveOpts.DryRun {
@@ -51,12 +59,11 @@ func MoveDuplicates(ctx context.Context, db *sql.DB, opts DuplicateListOptions, 
 			SELECT hash, size, SUM(size) as total_size
 			FROM files
 			WHERE hash IS NOT NULL
+			AND hash NOT IN ('TIMEOUT_ERROR', 'HASH_ERROR')
 			AND size IS NOT NULL
-			AND LOWER(hostname) = LOWER($1)
 	`
 	var args []interface{}
-	args = append(args, hostName)
-	var argCount = 1
+	var argCount int
 
 	if opts.MinSize > 0 {
 		argCount++
@@ -79,8 +86,7 @@ func MoveDuplicates(ctx context.Context, db *sql.DB, opts DuplicateListOptions, 
 		SELECT f.hash, f.path, f.hostname, f.size, COALESCE(f.root_folder, '') as root_folder
 		FROM duplicate_hashes d
 		JOIN files f ON f.hash = d.hash AND f.size = d.size
-		WHERE LOWER(f.hostname) = LOWER($1)
-		ORDER BY d.total_size DESC, d.hash, d.size, f.path
+		ORDER BY d.total_size DESC, d.hash, d.size, f.hostname, f.path
 	`
 
 	// Query duplicate groups
@@ -93,13 +99,7 @@ func MoveDuplicates(ctx context.Context, db *sql.DB, opts DuplicateListOptions, 
 	// Process results
 	var currentHash string
 	var currentSize int64
-	var currentGroup struct {
-		Hash      string
-		Files     []string
-		Hosts     []string
-		RootPaths []string
-		Size      int64
-	}
+	var currentGroup duplicateMoveGroup
 	var totalMoved, totalSaved int64
 
 	for rows.Next() {
@@ -113,23 +113,18 @@ func MoveDuplicates(ctx context.Context, db *sql.DB, opts DuplicateListOptions, 
 		if hash != currentHash || size != currentSize {
 			// Process previous group
 			if currentHash != "" {
-				if err := moveGroupDuplicates(currentGroup, moveOpts, db); err != nil {
+				moved, err := moveGroupDuplicates(currentGroup, moveOpts, db, hostName)
+				if err != nil {
 					return fmt.Errorf("error moving duplicates for hash %s: %v", currentHash, err)
 				}
-				totalMoved += int64(len(currentGroup.Files) - 1)
-				totalSaved += currentGroup.Size * int64(len(currentGroup.Files)-1)
+				totalMoved += moved
+				totalSaved += currentGroup.Size * moved
 			}
 
 			// Start new group
 			currentHash = hash
 			currentSize = size
-			currentGroup = struct {
-				Hash      string
-				Files     []string
-				Hosts     []string
-				RootPaths []string
-				Size      int64
-			}{
+			currentGroup = duplicateMoveGroup{
 				Hash:      hash,
 				Size:      size,
 				Files:     make([]string, 0),
@@ -146,12 +141,13 @@ func MoveDuplicates(ctx context.Context, db *sql.DB, opts DuplicateListOptions, 
 	// Process the last group
 	if currentHash != "" {
 		// Debug log for root paths
-		fmt.Printf("[DEBUG] Looping through these root paths: %v\n", currentGroup.RootPaths)
-		if err := moveGroupDuplicates(currentGroup, moveOpts, db); err != nil {
+		logging.InfoLogger.Printf("[DEBUG] Looping through these root paths: %v", currentGroup.RootPaths)
+		moved, err := moveGroupDuplicates(currentGroup, moveOpts, db, hostName)
+		if err != nil {
 			return fmt.Errorf("error moving duplicates for hash %s: %v", currentHash, err)
 		}
-		totalMoved += int64(len(currentGroup.Files) - 1)
-		totalSaved += currentGroup.Size * int64(len(currentGroup.Files)-1)
+		totalMoved += moved
+		totalSaved += currentGroup.Size * moved
 	}
 
 	if err := rows.Err(); err != nil {
@@ -166,16 +162,10 @@ func MoveDuplicates(ctx context.Context, db *sql.DB, opts DuplicateListOptions, 
 	return nil
 }
 
-// moveGroupDuplicates moves all but one file from a group of duplicates
-func moveGroupDuplicates(group struct {
-	Hash      string
-	Files     []string
-	Hosts     []string
-	RootPaths []string
-	Size      int64
-}, opts MoveOptions, db *sql.DB) error {
+// moveGroupDuplicates moves local duplicate files that are not the deterministic global keeper.
+func moveGroupDuplicates(group duplicateMoveGroup, opts MoveOptions, db *sql.DB, localHost string) (int64, error) {
 	if len(group.Files) < 2 {
-		return nil // Nothing to move
+		return 0, nil // Nothing to move
 	}
 
 	// Create a slice to store files with their parent directory counts
@@ -183,26 +173,39 @@ func moveGroupDuplicates(group struct {
 		path           string
 		host           string
 		rootPath       string
+		sourcePath     string
+		local          bool
 		parentDirCount int
 	}
 	files := make([]fileInfo, len(group.Files))
 
-	// Count files in parent directories
+	// Count local files in parent directories. Remote hosts are never inspected or moved
+	// by this process; each host archives its own files when the command runs there.
 	for i, path := range group.Files {
-		// Construct full path by joining root path and relative path
-		fullPath := filepath.Join(group.RootPaths[i], path)
-		logging.InfoLogger.Printf("[DEBUG] Using rootPath: %s, path: %s, fullPath: %s", group.RootPaths[i], path, fullPath)
-		parentDir := filepath.Dir(fullPath)
+		info := fileInfo{
+			path:     path,
+			host:     group.Hosts[i],
+			rootPath: group.RootPaths[i],
+			local:    strings.EqualFold(group.Hosts[i], localHost),
+		}
+		if filepath.IsAbs(path) {
+			info.sourcePath = path
+		} else {
+			info.sourcePath = filepath.Join(group.RootPaths[i], path)
+		}
+
+		if !info.local {
+			files[i] = info
+			continue
+		}
+
+		logging.InfoLogger.Printf("[DEBUG] Using rootPath: %s, path: %s, fullPath: %s", group.RootPaths[i], path, info.sourcePath)
+		parentDir := filepath.Dir(info.sourcePath)
 		entries, err := os.ReadDir(parentDir)
 		if err != nil {
 			// If directory doesn't exist, assign count of 0
 			logging.ErrorLogger.Printf("Warning: Could not read directory %s: %v", parentDir, err)
-			files[i] = fileInfo{
-				path:           path,
-				host:           group.Hosts[i],
-				rootPath:       group.RootPaths[i],
-				parentDirCount: 0,
-			}
+			files[i] = info
 			continue
 		}
 
@@ -214,35 +217,43 @@ func moveGroupDuplicates(group struct {
 			}
 		}
 
-		files[i] = fileInfo{
-			path:           path,
-			host:           group.Hosts[i],
-			rootPath:       group.RootPaths[i],
-			parentDirCount: fileCount,
-		}
+		info.parentDirCount = fileCount
+		files[i] = info
 	}
 
-	// Sort files by parent directory count (ascending)
-	// This puts files from least populated directories first
+	// Use only database attributes for the global keeper so every host reaches
+	// the same decision even though each process can only inspect its local disk.
 	sort.Slice(files, func(i, j int) bool {
-		return files[i].parentDirCount < files[j].parentDirCount
+		if files[i].host != files[j].host {
+			return files[i].host < files[j].host
+		}
+		if files[i].rootPath != files[j].rootPath {
+			return files[i].rootPath < files[j].rootPath
+		}
+		return files[i].path < files[j].path
 	})
 
-	// Keep the last file (from most populated directory) and move the rest
-	fmt.Printf("\nHash: %s (size: %s)\n", group.Hash, formatBytes(group.Size))
-	fmt.Printf("Keeping: %s (%s) [parent dir has %d files]\n",
-		files[len(files)-1].path,
-		files[len(files)-1].host,
-		files[len(files)-1].parentDirCount)
-
-	// Move all files except the last one (which is from the most populated directory)
-	for i := 0; i < len(files)-1; i++ {
-		var sourcePath string
-		if filepath.IsAbs(files[i].path) {
-			sourcePath = files[i].path
-		} else {
-			sourcePath = filepath.Join(files[i].rootPath, files[i].path)
+	keeper := files[0]
+	hasLocalMove := false
+	for i := 1; i < len(files); i++ {
+		if files[i].local {
+			hasLocalMove = true
+			break
 		}
+	}
+	if !hasLocalMove {
+		return 0, nil
+	}
+
+	fmt.Printf("\nHash: %s (size: %s)\n", group.Hash, formatBytes(group.Size))
+	fmt.Printf("Keeping: %s (%s)\n", keeper.path, keeper.host)
+
+	var moved int64
+	for i := 1; i < len(files); i++ {
+		if !files[i].local {
+			continue
+		}
+		sourcePath := files[i].sourcePath
 		logging.InfoLogger.Printf("[DEBUG] Moving file. rootPath: %s, path: %s, sourcePath: %s", files[i].rootPath, files[i].path, sourcePath)
 
 		// Skip if source file doesn't exist
@@ -252,7 +263,7 @@ func moveGroupDuplicates(group struct {
 		}
 
 		// Create target path
-		targetPath := filepath.Join(opts.TargetDir, files[i].path)
+		targetPath := filepath.Join(opts.TargetDir, files[i].host, archiveRelativePath(files[i].path))
 		targetDir := filepath.Dir(targetPath)
 
 		if opts.DryRun {
@@ -264,7 +275,7 @@ func moveGroupDuplicates(group struct {
 
 			// Create target directory
 			if err := os.MkdirAll(targetDir, 0755); err != nil {
-				return fmt.Errorf("error creating directory %s: %v", targetDir, err)
+				return moved, fmt.Errorf("error creating directory %s: %v", targetDir, err)
 			}
 
 			// Move the file using rsync to handle cross-filesystem moves
@@ -277,24 +288,43 @@ func moveGroupDuplicates(group struct {
 					cmd := exec.Command("rsync", "-a", "--remove-source-files", sourcePath, targetPath)
 					output, err := cmd.CombinedOutput()
 					if err != nil {
-						return fmt.Errorf("error moving file %s with rsync: %v\nOutput: %s", sourcePath, err, output)
+						return moved, fmt.Errorf("error moving file %s with rsync: %v\nOutput: %s", sourcePath, err, output)
 					}
 				} else {
 					// If it's another error, return it
-					return fmt.Errorf("error moving file %s: %v", sourcePath, err)
+					return moved, fmt.Errorf("error moving file %s: %v", sourcePath, err)
 				}
 			}
 
 			// Delete the file from the database
 			_, err = db.Exec(`
 				DELETE FROM files
-				WHERE path = $1 AND LOWER(hostname) = LOWER($2)
-			`, files[i].path, files[i].host)
+				WHERE path = $1
+				AND LOWER(hostname) = LOWER($2)
+				AND COALESCE(root_folder, '') = $3
+			`, files[i].path, files[i].host, files[i].rootPath)
 			if err != nil {
 				logging.ErrorLogger.Printf("Warning: Failed to delete file %s from database: %v", files[i].path, err)
 			}
 		}
+		moved++
 	}
 
-	return nil
+	return moved, nil
+}
+
+func archiveRelativePath(path string) string {
+	cleaned := filepath.Clean(path)
+	if volume := filepath.VolumeName(cleaned); volume != "" {
+		cleaned = strings.TrimPrefix(cleaned, volume)
+	}
+	cleaned = strings.TrimLeft(cleaned, string(filepath.Separator))
+	for cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
+		cleaned = strings.TrimPrefix(cleaned, "..")
+		cleaned = strings.TrimLeft(cleaned, string(filepath.Separator))
+	}
+	if cleaned == "." || cleaned == "" {
+		return filepath.Base(path)
+	}
+	return cleaned
 }

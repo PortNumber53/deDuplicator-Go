@@ -100,6 +100,39 @@ func TestFindDuplicateGroupsSeparatesSameHashDifferentSizes(t *testing.T) {
 	}
 }
 
+func TestFindDuplicateGroupsAcrossHostsWhenHostnameEmpty(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	dupRows := sqlmock.NewRows([]string{"hash", "path", "hostname", "size"}).
+		AddRow("hash-a", "movie.mkv", "pinky", int64(10*1024*1024*1024)).
+		AddRow("hash-a", "movie.mkv", "rpi4", int64(10*1024*1024*1024)).
+		AddRow("hash-b", "backup.tar", "brain", int64(12*1024*1024*1024)).
+		AddRow("hash-b", "backup.tar", "pinky", int64(12*1024*1024*1024))
+
+	mock.ExpectQuery(`(?s)WITH duplicates.*WHERE hash IS NOT NULL.*AND hash NOT IN \('TIMEOUT_ERROR', 'HASH_ERROR'\).*AND size >= \$1.*GROUP BY hash, size.*HAVING COUNT\(\*\) > 1.*LIMIT \$2.*JOIN files f ON f.hash = d.hash AND f.size = d.size.*ORDER BY d.total_size DESC, d.hash, d.size, f.hostname, f.path`).
+		WithArgs(int64(10*1024*1024*1024), 5).
+		WillReturnRows(dupRows)
+
+	groups, err := FindDuplicateGroups(context.Background(), db, "", 10*1024*1024*1024, 5)
+	if err != nil {
+		t.Fatalf("FindDuplicateGroups cross-host error: %v", err)
+	}
+	if len(groups) != 2 {
+		t.Fatalf("expected 2 groups, got %d: %+v", len(groups), groups)
+	}
+	if got := strings.Join(groups[0].Hosts, ","); got != "pinky,rpi4" {
+		t.Fatalf("expected first group to include hosts pinky,rpi4, got %s", got)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
 func TestDedupFilesDryRunHandlesSameHashDifferentSizes(t *testing.T) {
 	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
 	if err != nil {
@@ -369,6 +402,67 @@ func TestMoveDuplicatesDryRunUsesRootFolderAndSkipsChanges(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(root, "dupes", filepath.Base(source1))); !os.IsNotExist(err) {
 		t.Fatalf("expected no files to be moved in dry-run, stat err: %v", err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestMoveDuplicatesAcrossHostsMovesOnlyLocalFilesIntoHostFolder(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	root := t.TempDir()
+	dest := filepath.Join(root, "dupes")
+	localRoot := filepath.Join(root, "local")
+	if err := os.MkdirAll(localRoot, 0755); err != nil {
+		t.Fatalf("mkdir local root: %v", err)
+	}
+	localFile := filepath.Join(localRoot, "movie.mkv")
+	if err := os.WriteFile(localFile, []byte("dup"), 0644); err != nil {
+		t.Fatalf("write local duplicate: %v", err)
+	}
+
+	hostname, _ := os.Hostname()
+	lower := strings.ToLower(hostname)
+
+	mock.ExpectQuery("SELECT hostname FROM hosts WHERE LOWER\\(hostname\\) = LOWER\\(\\$1\\)").
+		WithArgs(lower).
+		WillReturnRows(sqlmock.NewRows([]string{"hostname"}).AddRow("zz-local"))
+
+	mock.ExpectQuery("WITH duplicate_hashes AS").
+		WillReturnRows(sqlmock.NewRows([]string{"hash", "path", "hostname", "size", "root_folder"}).
+			AddRow("hash-1", "movie.mkv", "aa-remote", int64(3), "/remote/media").
+			AddRow("hash-1", "movie.mkv", "zz-local", int64(3), localRoot))
+
+	mock.ExpectExec("DELETE FROM files").
+		WithArgs("movie.mkv", "zz-local", localRoot).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	logging.InfoLogger = log.New(io.Discard, "", 0)
+	logging.ErrorLogger = log.New(io.Discard, "", 0)
+
+	err = MoveDuplicates(context.Background(), db, DuplicateListOptions{}, MoveOptions{
+		TargetDir: dest,
+		DryRun:    false,
+		Count:     0,
+	})
+	if err != nil {
+		t.Fatalf("MoveDuplicates cross-host error: %v", err)
+	}
+
+	if _, err := os.Stat(localFile); !os.IsNotExist(err) {
+		t.Fatalf("expected local duplicate to be moved, stat err: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "zz-local", "movie.mkv")); err != nil {
+		t.Fatalf("expected local duplicate under host target folder: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "aa-remote")); !os.IsNotExist(err) {
+		t.Fatalf("expected no remote host target folder, stat err: %v", err)
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {

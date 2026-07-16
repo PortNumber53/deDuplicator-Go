@@ -48,10 +48,10 @@ The deduplicator tool provides several commands to help you manage duplicate fil
 - `files`: File-related commands
   - Subcommands:
     - `find`: Find files for a specific host
-    - `list-dupes`: List duplicate files
-    - `move-dupes`: Move duplicate files to a target directory
+    - `list-dupes`: List duplicate files across all hosts
+    - `move-dupes`: Move this host's duplicate files to a per-host target directory
       - Options:
-        - `--target DIR`: Target directory to move duplicates to (required)
+        - `--target DIR`: Target directory to move duplicates under `<target>/<host>/` (required)
         - `--dry-run`: Show what would be moved without making changes (default)
         - `--min-size SIZE`: Minimum file size to consider (e.g., "1M", "1.5G", "500K")
     - `hash`: Calculate and update file hashes in the database
@@ -250,7 +250,7 @@ deduplicator files hash --retry-problematic
 
 ### Find Duplicates
 ```bash
-# List duplicate files
+# List duplicate files across all hosts
 deduplicator files list-dupes
 
 # List top 10 duplicate groups by size
@@ -259,10 +259,10 @@ deduplicator files list-dupes --count 10
 # List duplicates larger than 1GB
 deduplicator files list-dupes --min-size 1G
 
-# Move duplicate files to a destination directory
+# Legacy current-host move path
 deduplicator files list-dupes --dest /backup/dupes --run
 
-# Move duplicates with path prefix stripping
+# Legacy current-host move path with prefix stripping
 deduplicator files list-dupes --dest /backup/dupes --strip-prefix /data --run
 ```
 
@@ -274,10 +274,10 @@ deduplicator files prune
 
 ### Move Duplicate Files
 ```bash
-# Show what would be moved (dry run)
+# Show which local files would be moved under /backup/dupes/<host>/
 deduplicator files move-dupes --target /backup/dupes --dry-run
 
-# Actually move files
+# Actually move local duplicates under /backup/dupes/<host>/
 deduplicator files move-dupes --target /backup/dupes
 
 # Only consider files larger than 1MB

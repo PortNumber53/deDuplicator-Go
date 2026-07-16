@@ -423,9 +423,10 @@ Options:
 		Name:        "files list-dupes",
 		Description: "List duplicates (or move them if --dest is provided)",
 		Usage:       "files list-dupes [--count N] [--min-size SIZE] [--dest DIR] [--run] [--strip-prefix PREFIX] [--ignore-dest=true|false]",
-		Help: `List duplicates for the current host (host inferred from OS hostname).
+		Help: `List duplicate files across all hosts.
 
-If --dest is provided, duplicates are moved (dry-run by default; use --run to actually move).
+If --dest is provided, the legacy current-host mover is used (dry-run by default;
+use --run to actually move). For cross-host duplicate archiving, use files move-dupes.
 
 Options:
   --count N             Limit number of duplicate groups shown (0 = unlimited)
@@ -444,25 +445,28 @@ Options:
 	{
 		Name:        "files move-dupes",
 		Description: "Move duplicate files to a specified target directory",
-		Usage:       "files move-dupes --target TARGET_DIR [--dry-run]",
+		Usage:       "files move-dupes --target TARGET_DIR [--dry-run] [--count N] [--min-size SIZE]",
 		Help: `Move duplicate files to a specified target directory.
 
-This command identifies duplicate files in the database and moves all but one copy
-to the specified target directory. By default, it runs in dry-run mode to show
-what would be moved without making any changes.
+This command identifies duplicate files across all hosts. It only moves files
+that belong to the local host, placing them under TARGET_DIR/<host>/ so each host
+can archive its own duplicates locally.
 
 Options:
   --target string   Target directory where duplicate files will be moved (required)
   --dry-run         Show what would be moved without making any changes (default: false)
+  --count N         Limit number of duplicate groups processed (0 = unlimited)
+  --min-size SIZE   Minimum file size (e.g. 1M, 1.5G, 500K)
   --help            Show help for move-dupes command
 
-Note: The original directory structure will be preserved under the target directory.`,
+Note: The original directory structure is preserved under the per-host target folder.`,
 		Examples: []string{
 			"# Show what would be moved (dry run)",
 			"deduplicator files move-dupes --target /backup/dupes --dry-run",
 			"",
 			"# Actually move duplicate files",
 			"deduplicator files move-dupes --target /backup/dupes",
+			"deduplicator files move-dupes --target /backup/dupes --min-size 10G",
 		},
 	},
 	{

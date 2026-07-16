@@ -37,20 +37,31 @@ type DuplicateGroup struct {
 
 // FindDuplicateGroups finds groups of duplicate files based on the provided options
 func FindDuplicateGroups(ctx context.Context, db *sql.DB, hostname string, minSize int64, count int) ([]DuplicateGroup, error) {
-	// Find host in database by hostname (case-insensitive)
-	var hostName string
-	err := db.QueryRow(`
-		SELECT hostname
-		FROM hosts
-		WHERE LOWER(hostname) = LOWER($1)
-	`, hostname).Scan(&hostName)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("no host found for hostname %s, please add it using 'dedupe manage add'", hostname)
+	scopedToHost := strings.TrimSpace(hostname) != ""
+	var args []interface{}
+	argCount := 0
+	hostFilter := ""
+
+	if scopedToHost {
+		// Find host in database by hostname (case-insensitive)
+		var hostName string
+		err := db.QueryRow(`
+			SELECT hostname
+			FROM hosts
+			WHERE LOWER(hostname) = LOWER($1)
+		`, hostname).Scan(&hostName)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return nil, fmt.Errorf("no host found for hostname %s, please add it using 'dedupe manage add'", hostname)
+			}
+			return nil, fmt.Errorf("error finding host: %v", err)
 		}
-		return nil, fmt.Errorf("error finding host: %v", err)
+		log.Printf("Found host: %s", hostName)
+
+		argCount++
+		args = append(args, hostName)
+		hostFilter = fmt.Sprintf(" AND LOWER(hostname) = LOWER($%d)", argCount)
 	}
-	log.Printf("Found host: %s", hostName)
 
 	// Build query based on options
 	query := `
@@ -60,11 +71,8 @@ func FindDuplicateGroups(ctx context.Context, db *sql.DB, hostname string, minSi
 			WHERE hash IS NOT NULL
 			AND hash NOT IN ('TIMEOUT_ERROR', 'HASH_ERROR')
 			AND size IS NOT NULL
-			AND LOWER(hostname) = LOWER($1)
 	`
-	var args []interface{}
-	args = append(args, hostName)
-	var argCount = 1
+	query += hostFilter
 
 	if minSize > 0 {
 		argCount++
@@ -91,8 +99,12 @@ func FindDuplicateGroups(ctx context.Context, db *sql.DB, hostname string, minSi
 		SELECT f.hash, f.path, f.hostname, f.size
 		FROM duplicates d
 		JOIN files f ON f.hash = d.hash AND f.size = d.size
-		WHERE LOWER(f.hostname) = LOWER($1)
-		ORDER BY d.total_size DESC, d.hash, d.size, f.path
+	`
+	if scopedToHost {
+		query += " WHERE LOWER(f.hostname) = LOWER($1)"
+	}
+	query += `
+		ORDER BY d.total_size DESC, d.hash, d.size, f.hostname, f.path
 	`
 
 	// Query duplicate groups
