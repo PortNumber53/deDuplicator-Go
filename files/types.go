@@ -47,12 +47,13 @@ type MoveOptions struct {
 // HashOptions represents options for the hash command
 type HashOptions struct {
 	Server           string
-	Refresh          bool // hash selected files regardless of existing hash
-	Renew            bool // hash files with hashes older than 1 week
-	RetryProblematic bool // retry files that previously timed out
-	FirstChunk       bool // hash only the first chunk of candidate files
-	FullHash         bool // hash all eligible files instead of only duplicate-size candidates
-	LargeFirst       bool // process larger files before smaller files
+	Refresh          bool     // hash selected files regardless of existing hash
+	Renew            bool     // hash files with hashes older than 1 week
+	RetryProblematic bool     // retry files that previously timed out
+	FirstChunk       bool     // hash only the first chunk of candidate files
+	FullHash         bool     // hash all eligible files instead of only duplicate-size candidates
+	LargeFirst       bool     // process larger files before smaller files
+	Paths            []string // friendly path names or absolute root folders to process first
 }
 
 // FindOptions represents options for the find command

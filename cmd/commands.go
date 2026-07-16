@@ -360,7 +360,7 @@ Options:
 	{
 		Name:        "files hash",
 		Description: "Calculate and store file hashes for the current host",
-		Usage:       "files hash [--force] [--renew] [--retry-problematic] [--first-chunk|--full-hash] [--large-first]",
+		Usage:       "files hash [--force] [--renew] [--retry-problematic] [--first-chunk|--full-hash] [--large-first] [--path PATH]",
 		Help: `Calculate and store file hashes for deduplication (host is inferred from OS hostname).
 
 Options:
@@ -370,6 +370,7 @@ Options:
   --first-chunk        Hash only the first 1KiB of files with duplicate sizes
   --full-hash          Hash full contents for all eligible files
   --large-first        Process larger files before smaller files
+  --path PATH          Friendly path or absolute root folder to process first (repeatable)
 
 By default, only files whose size appears more than once on the host are hashed.
 Use --full-hash --force to rehash every file for the current host.`,
@@ -379,6 +380,7 @@ Use --full-hash --force to rehash every file for the current host.`,
 			"deduplicator files hash --first-chunk",
 			"deduplicator files hash --full-hash --force",
 			"deduplicator files hash --large-first",
+			"deduplicator files hash --path Photos --path Videos",
 			"deduplicator files hash --retry-problematic",
 		},
 	},

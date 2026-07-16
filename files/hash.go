@@ -11,6 +11,7 @@ import (
 	"deduplicator/db"
 	"deduplicator/logging"
 
+	"github.com/lib/pq"
 	"github.com/schollz/progressbar/v3"
 )
 
@@ -49,8 +50,63 @@ func buildHashWhereClause(opts HashOptions) string {
 	return whereClause
 }
 
-func buildHashBatchQuery(whereClause string, batchSize int, largeFirst bool) string {
-	if largeFirst {
+type hashBatchQueryOptions struct {
+	LargeFirst      bool
+	PrioritizePaths bool
+}
+
+func buildHashPathPriorityExpression(parameterIndex int) string {
+	return fmt.Sprintf("COALESCE(array_position($%d::text[], COALESCE(root_folder, '')), cardinality($%d::text[]) + 1)", parameterIndex, parameterIndex)
+}
+
+func buildHashBatchQuery(whereClause string, batchSize int, opts hashBatchQueryOptions) string {
+	if opts.PrioritizePaths {
+		priorityExpr := buildHashPathPriorityExpression(2)
+		if opts.LargeFirst {
+			return fmt.Sprintf(
+				`SELECT id, path, root_folder, COALESCE(size, -1) AS effective_size, %s AS path_priority
+				FROM files %s
+				AND (
+					$3::int IS NULL
+					OR %s > $3::int
+					OR (
+						%s = $3::int
+						AND (
+							$4::bigint IS NULL
+							OR COALESCE(size, -1) < $4::bigint
+							OR (COALESCE(size, -1) = $4::bigint AND id > $5)
+						)
+					)
+				)
+				ORDER BY path_priority ASC, COALESCE(size, -1) DESC, id ASC
+				LIMIT %d`,
+				priorityExpr,
+				whereClause,
+				priorityExpr,
+				priorityExpr,
+				batchSize,
+			)
+		}
+
+		return fmt.Sprintf(
+			`SELECT id, path, root_folder, COALESCE(size, -1) AS effective_size, %s AS path_priority
+			FROM files %s
+			AND (
+				$3::int IS NULL
+				OR %s > $3::int
+				OR (%s = $3::int AND id > $4)
+			)
+			ORDER BY path_priority ASC, id ASC
+			LIMIT %d`,
+			priorityExpr,
+			whereClause,
+			priorityExpr,
+			priorityExpr,
+			batchSize,
+		)
+	}
+
+	if opts.LargeFirst {
 		return fmt.Sprintf(
 			`SELECT id, path, root_folder, COALESCE(size, -1) AS effective_size
 			FROM files %s
@@ -83,6 +139,49 @@ func nullableInt64Value(value sql.NullInt64) interface{} {
 	return value.Int64
 }
 
+func resolveHashPriorityRootFolders(host *db.Host, paths []string) ([]string, error) {
+	priorityPaths := make([]string, 0, len(paths))
+	seenPaths := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		if _, seen := seenPaths[path]; seen {
+			continue
+		}
+		seenPaths[path] = struct{}{}
+		priorityPaths = append(priorityPaths, path)
+	}
+	if len(priorityPaths) == 0 {
+		return nil, nil
+	}
+
+	configuredPaths, err := host.GetPaths()
+	if err != nil {
+		return nil, fmt.Errorf("error decoding host paths: %v", err)
+	}
+
+	rootFolders := make([]string, 0, len(priorityPaths))
+	seenRoots := make(map[string]struct{}, len(priorityPaths))
+	for _, path := range priorityPaths {
+		rootFolder, ok := configuredPaths[path]
+		if !ok {
+			if !filepath.IsAbs(path) {
+				return nil, fmt.Errorf("friendly path '%s' not found for server '%s'", path, host.Name)
+			}
+			rootFolder = path
+		}
+		if _, seen := seenRoots[rootFolder]; seen {
+			continue
+		}
+		seenRoots[rootFolder] = struct{}{}
+		rootFolders = append(rootFolders, rootFolder)
+	}
+
+	return rootFolders, nil
+}
+
 // HashFiles calculates hashes for files in the database
 func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
 	if opts.FirstChunk && opts.FullHash {
@@ -99,6 +198,10 @@ func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
 		}
 	}
 	hostname := host.Hostname
+	priorityRootFolders, err := resolveHashPriorityRootFolders(host, opts.Paths)
+	if err != nil {
+		return err
+	}
 
 	// Build base WHERE clause (no SELECT list) based on options.
 	// We batch using `id > lastID` so we don't re-process rows even if the filter
@@ -171,11 +274,16 @@ func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
 	// Use a keyset bookmark for batching instead of OFFSET.
 	lastID := 0
 	var lastEffectiveSize sql.NullInt64
+	var lastPathPriority sql.NullInt64
 
 	// Track statistics
 	var processed, skipped int64
 
-	batchQuery := buildHashBatchQuery(whereClause, batchSize, opts.LargeFirst)
+	prioritizePaths := len(priorityRootFolders) > 0
+	batchQuery := buildHashBatchQuery(whereClause, batchSize, hashBatchQueryOptions{
+		LargeFirst:      opts.LargeFirst,
+		PrioritizePaths: prioritizePaths,
+	})
 	for {
 		// Check for context cancellation
 		select {
@@ -185,7 +293,11 @@ func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
 		}
 
 		var rows *sql.Rows
-		if opts.LargeFirst {
+		if prioritizePaths && opts.LargeFirst {
+			rows, err = sqldb.Query(batchQuery, hostname, pq.Array(priorityRootFolders), nullableInt64Value(lastPathPriority), nullableInt64Value(lastEffectiveSize), lastID)
+		} else if prioritizePaths {
+			rows, err = sqldb.Query(batchQuery, hostname, pq.Array(priorityRootFolders), nullableInt64Value(lastPathPriority), lastID)
+		} else if opts.LargeFirst {
 			rows, err = sqldb.Query(batchQuery, hostname, nullableInt64Value(lastEffectiveSize), lastID)
 		} else {
 			rows, err = sqldb.Query(batchQuery, hostname, lastID)
@@ -207,7 +319,12 @@ func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
 			var dbPath string
 			var rootFolder sql.NullString
 			var effectiveSize int64
-			err := rows.Scan(&id, &dbPath, &rootFolder, &effectiveSize)
+			var pathPriority int64
+			if prioritizePaths {
+				err = rows.Scan(&id, &dbPath, &rootFolder, &effectiveSize, &pathPriority)
+			} else {
+				err = rows.Scan(&id, &dbPath, &rootFolder, &effectiveSize)
+			}
 			if err != nil {
 				logging.InfoLogger.Printf("Warning: Error scanning row: %v", err)
 				continue
@@ -216,6 +333,9 @@ func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
 			// Update lastID to the current file's id
 			lastID = id
 			lastEffectiveSize = sql.NullInt64{Int64: effectiveSize, Valid: true}
+			if prioritizePaths {
+				lastPathPriority = sql.NullInt64{Int64: pathPriority, Valid: true}
+			}
 			fileCount++
 
 			// Construct the full dbPath from root_folder + dbPath

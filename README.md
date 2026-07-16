@@ -62,6 +62,7 @@ The deduplicator tool provides several commands to help you manage duplicate fil
         - `--first-chunk`: Hash only the first 1KiB of files with duplicate sizes
         - `--full-hash`: Hash full contents for all eligible files
         - `--large-first`: Process larger files before smaller files
+        - `--path PATH`: Friendly path or absolute root folder to process first (repeatable)
         - `--count N`: Process only N files (0 = unlimited)
     - `import`: Import files from a source directory to a target host
       - Options:
@@ -224,6 +225,9 @@ deduplicator files hash
 
 # Hash un-hashed duplicate-size files from largest to smallest
 deduplicator files hash --large-first
+
+# Prioritize one or more friendly paths, then continue hashing the rest
+deduplicator files hash --path Photos --path Videos
 
 # Quickly hash only the first 1KiB of un-hashed files whose size appears more than once
 deduplicator files hash --first-chunk

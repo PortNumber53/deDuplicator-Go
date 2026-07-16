@@ -6,6 +6,8 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -14,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	dedupdb "deduplicator/db"
 	"deduplicator/logging"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -26,6 +29,7 @@ func TestHashOptions(t *testing.T) {
 		options         HashOptions
 		expectedCountRe string
 		expectedParam   interface{}
+		hostSettings    []byte
 	}{
 		{
 			name: "Hash only files without hashes and duplicate sizes",
@@ -148,6 +152,16 @@ func TestHashOptions(t *testing.T) {
 			expectedCountRe: `(?s)SELECT COUNT\(\*\) FROM files.*WHERE LOWER\(hostname\) = LOWER\(\$1\).*AND size IS NOT NULL.*HAVING COUNT\(\*\) > 1`,
 			expectedParam:   "testhost",
 		},
+		{
+			name: "Path priority preserves default duplicate-size eligibility",
+			options: HashOptions{
+				Server: "testhost",
+				Paths:  []string{"photos"},
+			},
+			expectedCountRe: `(?s)SELECT COUNT\(\*\) FROM files.*WHERE LOWER\(hostname\) = LOWER\(\$1\).*AND hash IS NULL.*AND size IS NOT NULL.*HAVING COUNT\(\*\) > 1`,
+			expectedParam:   "testhost",
+			hostSettings:    []byte(`{"paths":{"photos":"/data/photos"}}`),
+		},
 	}
 
 	for _, tc := range tests {
@@ -159,8 +173,12 @@ func TestHashOptions(t *testing.T) {
 			}
 			defer db.Close()
 
+			hostSettings := tc.hostSettings
+			if hostSettings == nil {
+				hostSettings = []byte(`{}`)
+			}
 			hostRows := sqlmock.NewRows([]string{"id", "name", "hostname", "ip", "root_path", "settings", "created_at"}).
-				AddRow(1, "testhost", "testhost", "", "/test/path", []byte(`{}`), time.Now())
+				AddRow(1, "testhost", "testhost", "", "/test/path", hostSettings, time.Now())
 			mock.ExpectQuery(`SELECT id, name, hostname, ip, root_path, settings, created_at FROM hosts WHERE LOWER\(hostname\) = LOWER\(\$1\)`).
 				WithArgs(tc.options.Server).
 				WillReturnRows(hostRows)
@@ -244,7 +262,7 @@ func TestHashFilesBatchQueryDoesNotBreakWithLocalEnvironmentLimit(t *testing.T) 
 		RetryProblematic: false,
 	})
 
-	batch := buildHashBatchQuery(whereClause, 100, false)
+	batch := buildHashBatchQuery(whereClause, 100, hashBatchQueryOptions{})
 	if !strings.Contains(batch, "id > $2") {
 		t.Fatalf("expected batch query to use an id bookmark; got: %s", batch)
 	}
@@ -266,7 +284,7 @@ func TestHashFilesBatchQueryDoesNotBreakWithLocalEnvironmentLimit(t *testing.T) 
 func TestHashFilesLargeFirstBatchQueryUsesSizeBookmark(t *testing.T) {
 	whereClause := buildHashWhereClause(HashOptions{LargeFirst: true})
 
-	batch := buildHashBatchQuery(whereClause, 100, true)
+	batch := buildHashBatchQuery(whereClause, 100, hashBatchQueryOptions{LargeFirst: true})
 	if !strings.Contains(batch, "hash IS NULL") {
 		t.Fatalf("large-first mode should still select unhashed files by default; got: %s", batch)
 	}
@@ -281,6 +299,76 @@ func TestHashFilesLargeFirstBatchQueryUsesSizeBookmark(t *testing.T) {
 	}
 	if !strings.Contains(batch, "LIMIT 100") {
 		t.Fatalf("expected large-first query to include LIMIT 100; got: %s", batch)
+	}
+}
+
+func TestHashFilesPathPriorityBatchQueryUsesPriorityBookmark(t *testing.T) {
+	whereClause := buildHashWhereClause(HashOptions{})
+
+	batch := buildHashBatchQuery(whereClause, 100, hashBatchQueryOptions{PrioritizePaths: true})
+	if !strings.Contains(batch, "array_position($2::text[], COALESCE(root_folder, ''))") {
+		t.Fatalf("expected path priority query to use ordered root folder array parameter; got: %s", batch)
+	}
+	if !strings.Contains(batch, "$3::int IS NULL") {
+		t.Fatalf("expected path priority query to use priority bookmark; got: %s", batch)
+	}
+	if !strings.Contains(batch, "path_priority ASC, id ASC") {
+		t.Fatalf("expected path priority query to order by priority then id; got: %s", batch)
+	}
+	if !strings.Contains(batch, "id > $4") {
+		t.Fatalf("expected path priority query to advance equal-priority rows by id; got: %s", batch)
+	}
+}
+
+func TestHashFilesPathPriorityLargeFirstBatchQueryUsesPriorityAndSizeBookmarks(t *testing.T) {
+	whereClause := buildHashWhereClause(HashOptions{LargeFirst: true})
+
+	batch := buildHashBatchQuery(whereClause, 100, hashBatchQueryOptions{LargeFirst: true, PrioritizePaths: true})
+	if !strings.Contains(batch, "array_position($2::text[], COALESCE(root_folder, ''))") {
+		t.Fatalf("expected path priority query to use ordered root folder array parameter; got: %s", batch)
+	}
+	if !strings.Contains(batch, "$3::int IS NULL") {
+		t.Fatalf("expected path priority query to use priority bookmark; got: %s", batch)
+	}
+	if !strings.Contains(batch, "$4::bigint IS NULL") {
+		t.Fatalf("expected large-first path priority query to use size bookmark; got: %s", batch)
+	}
+	if !strings.Contains(batch, "COALESCE(size, -1) = $4::bigint AND id > $5") {
+		t.Fatalf("expected large-first path priority query to break equal-size ties by id; got: %s", batch)
+	}
+	if !strings.Contains(batch, "ORDER BY path_priority ASC, COALESCE(size, -1) DESC, id ASC") {
+		t.Fatalf("expected large-first path priority query to order by priority, size, then id; got: %s", batch)
+	}
+}
+
+func TestResolveHashPriorityRootFolders(t *testing.T) {
+	host := &dedupdb.Host{
+		Name:     "Backup1",
+		Settings: json.RawMessage(`{"paths":{"photos":"/data/photos","videos":"/data/videos"}}`),
+	}
+
+	roots, err := resolveHashPriorityRootFolders(host, []string{"photos", "/scratch", "photos", "videos"})
+	if err != nil {
+		t.Fatalf("resolve priority root folders: %v", err)
+	}
+	expected := []string{"/data/photos", "/scratch", "/data/videos"}
+	if strings.Join(roots, "\n") != strings.Join(expected, "\n") {
+		t.Fatalf("roots = %#v, want %#v", roots, expected)
+	}
+}
+
+func TestResolveHashPriorityRootFoldersRejectsUnknownFriendlyPath(t *testing.T) {
+	host := &dedupdb.Host{
+		Name:     "Backup1",
+		Settings: json.RawMessage(`{"paths":{"photos":"/data/photos"}}`),
+	}
+
+	_, err := resolveHashPriorityRootFolders(host, []string{"missing"})
+	if err == nil {
+		t.Fatal("expected unknown friendly path error")
+	}
+	if !strings.Contains(err.Error(), "friendly path 'missing' not found for server 'Backup1'") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -347,6 +435,80 @@ func TestHashFilesProcessesFirstChunkLargeFirstCombination(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("HashFiles first-chunk large-first error: %v", err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v\nlogs:\n%s", err, logBuffer.String())
+	}
+}
+
+func TestHashFilesProcessesPrioritizedFriendlyPathFirst(t *testing.T) {
+	var logBuffer bytes.Buffer
+	logging.InfoLogger = log.New(&logBuffer, "", 0)
+	logging.ErrorLogger = log.New(io.Discard, "", 0)
+
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	if err != nil {
+		t.Fatalf("Failed to create mock database: %v", err)
+	}
+	defer db.Close()
+	mock.MatchExpectationsInOrder(false)
+
+	priorityRoot := t.TempDir()
+	otherRoot := t.TempDir()
+	priorityContent := []byte("priority file content")
+	otherContent := []byte("other file content---")
+	if len(priorityContent) != len(otherContent) {
+		t.Fatalf("test fixture contents must have matching sizes")
+	}
+	if err := os.WriteFile(filepath.Join(priorityRoot, "priority.bin"), priorityContent, 0644); err != nil {
+		t.Fatalf("write priority file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(otherRoot, "other.bin"), otherContent, 0644); err != nil {
+		t.Fatalf("write other file: %v", err)
+	}
+
+	priorityHashBytes := sha256.Sum256(priorityContent)
+	priorityHash := hex.EncodeToString(priorityHashBytes[:])
+	otherHashBytes := sha256.Sum256(otherContent)
+	otherHash := hex.EncodeToString(otherHashBytes[:])
+
+	hostRows := sqlmock.NewRows([]string{"id", "name", "hostname", "ip", "root_path", "settings", "created_at"}).
+		AddRow(1, "Backup1", "backup1.local", "", priorityRoot, []byte(fmt.Sprintf(`{"paths":{"photos":%q}}`, priorityRoot)), time.Now())
+	mock.ExpectQuery(`SELECT id, name, hostname, ip, root_path, settings, created_at FROM hosts WHERE LOWER\(hostname\) = LOWER\(\$1\)`).
+		WithArgs("backup1.local").
+		WillReturnRows(hostRows)
+
+	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\) FROM files.*WHERE LOWER\(hostname\) = LOWER\(\$1\).*AND hash IS NULL.*AND size IS NOT NULL.*HAVING COUNT\(\*\) > 1`).
+		WithArgs("backup1.local").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
+
+	updateRe := `(?s)UPDATE files\s+SET hash = \$1, last_hashed_at = NOW\(\)\s+WHERE id = \$2`
+	mock.ExpectPrepare(`(?s)UPDATE files\s+SET hash = 'TIMEOUT_ERROR', last_hashed_at = NOW\(\)\s+WHERE id = \$1`)
+	mock.ExpectPrepare(`(?s)UPDATE files\s+SET hash = 'HASH_ERROR', last_hashed_at = NOW\(\)\s+WHERE id = \$1`)
+
+	fileRows := sqlmock.NewRows([]string{"id", "path", "root_folder", "effective_size", "path_priority"}).
+		AddRow(2, "priority.bin", priorityRoot, int64(len(priorityContent)), int64(1)).
+		AddRow(1, "other.bin", otherRoot, int64(len(otherContent)), int64(2))
+	mock.ExpectQuery(`(?s)SELECT id, path, root_folder, COALESCE\(size, -1\) AS effective_size, .* AS path_priority.*array_position\(\$2::text\[\], COALESCE\(root_folder, ''\)\).*ORDER BY path_priority ASC, id ASC`).
+		WithArgs("backup1.local", sqlmock.AnyArg(), nil, 0).
+		WillReturnRows(fileRows)
+
+	mock.ExpectPrepare(updateRe).
+		ExpectExec().
+		WithArgs(priorityHash, 2).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectPrepare(updateRe).
+		ExpectExec().
+		WithArgs(otherHash, 1).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	err = HashFiles(context.Background(), db, HashOptions{
+		Server: "backup1.local",
+		Paths:  []string{"photos"},
+	})
+	if err != nil {
+		t.Fatalf("HashFiles path priority error: %v", err)
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {

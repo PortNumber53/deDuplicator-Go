@@ -11,6 +11,21 @@ import (
 	"deduplicator/files"
 )
 
+type repeatedStringFlag []string
+
+func (f *repeatedStringFlag) String() string {
+	return strings.Join(*f, ",")
+}
+
+func (f *repeatedStringFlag) Set(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fmt.Errorf("value cannot be empty")
+	}
+	*f = append(*f, value)
+	return nil
+}
+
 // HandleFiles handles file-related commands
 func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 	var err error
@@ -163,6 +178,8 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 		firstChunk := hashCmd.Bool("first-chunk", false, "Hash only the first 1KiB of files with duplicate sizes")
 		fullHash := hashCmd.Bool("full-hash", false, "Hash full contents for all eligible files")
 		largeFirst := hashCmd.Bool("large-first", false, "Process larger files before smaller files")
+		var priorityPaths repeatedStringFlag
+		hashCmd.Var(&priorityPaths, "path", "Friendly path or absolute root folder to process first (can be repeated)")
 		_ = hashCmd.Int("count", 0, "Process only N files (0 = unlimited)")
 
 		if err := hashCmd.Parse(args[1:]); err != nil {
@@ -208,6 +225,7 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 			FirstChunk:       *firstChunk,
 			FullHash:         *fullHash,
 			LargeFirst:       *largeFirst,
+			Paths:            []string(priorityPaths),
 		})
 		if err != nil {
 			if strings.Contains(err.Error(), "no files need hashing") || strings.Contains(err.Error(), "No files need hashing") {

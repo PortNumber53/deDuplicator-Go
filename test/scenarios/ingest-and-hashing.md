@@ -28,6 +28,12 @@ Feature: File ingest and hashing
     When I run `deduplicator files hash --large-first`
     Then rows with NULL hash and a size shared by another file are processed from largest size to smallest size
 
+  Scenario: Prioritizing friendly paths while hashing
+    Given host "Backup1" has friendly paths "photos" and "videos" mapped to root folders
+    And files rows for host "backup1.local" with some NULL hashes and repeated file sizes across multiple root folders
+    When I run `deduplicator files hash --path photos --path videos`
+    Then eligible files under "photos" are processed first, eligible files under "videos" are processed next, and all other eligible files are processed after them
+
   Scenario: Hashing with compatible combined flags
     Given files rows for host "backup1.local" with some NULL hashes and repeated file sizes
     When I run `deduplicator files hash --first-chunk --large-first`

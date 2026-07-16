@@ -59,6 +59,8 @@ func CreateFlagSets(version string) map[string]*flag.FlagSet {
 	filesHashCmd.Bool("first-chunk", false, "Hash only the first 1KiB of files with duplicate sizes")
 	filesHashCmd.Bool("full-hash", false, "Hash full contents for all eligible files")
 	filesHashCmd.Bool("large-first", false, "Process larger files before smaller files")
+	var hashPriorityPaths repeatedStringFlag
+	filesHashCmd.Var(&hashPriorityPaths, "path", "Friendly path or absolute root folder to process first (can be repeated)")
 	filesHashCmd.Int("count", 0, "Process only N files (0 = unlimited)")
 	flagSets["files-hash"] = filesHashCmd
 
