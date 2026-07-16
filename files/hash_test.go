@@ -1,13 +1,20 @@
 package files
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"deduplicator/logging"
 
 	"github.com/DATA-DOG/go-sqlmock"
 )
@@ -99,6 +106,48 @@ func TestHashOptions(t *testing.T) {
 			expectedCountRe: `(?s)SELECT COUNT\(\*\) FROM files.*WHERE LOWER\(hostname\) = LOWER\(\$1\).*AND \(hash IS NULL OR hash IN \('TIMEOUT_ERROR', 'HASH_ERROR'\) OR last_hashed_at < NOW\(\) - INTERVAL '1 week'\).*AND size IS NOT NULL.*HAVING COUNT\(\*\) > 1`,
 			expectedParam:   "testhost",
 		},
+		{
+			name: "First chunk large first scans unhashed duplicate-size files",
+			options: HashOptions{
+				Server:     "testhost",
+				FirstChunk: true,
+				LargeFirst: true,
+			},
+			expectedCountRe: `(?s)SELECT COUNT\(\*\) FROM files.*WHERE LOWER\(hostname\) = LOWER\(\$1\).*AND hash IS NULL.*AND size IS NOT NULL.*HAVING COUNT\(\*\) > 1`,
+			expectedParam:   "testhost",
+		},
+		{
+			name: "Full hash large first scans all unhashed files",
+			options: HashOptions{
+				Server:     "testhost",
+				FullHash:   true,
+				LargeFirst: true,
+			},
+			expectedCountRe: `(?s)SELECT COUNT\(\*\) FROM files.*WHERE LOWER\(hostname\) = LOWER\(\$1\) AND hash IS NULL\s*$`,
+			expectedParam:   "testhost",
+		},
+		{
+			name: "Full hash force large first scans all files",
+			options: HashOptions{
+				Server:     "testhost",
+				Refresh:    true,
+				FullHash:   true,
+				LargeFirst: true,
+			},
+			expectedCountRe: `(?s)SELECT COUNT\(\*\) FROM files.*WHERE LOWER\(hostname\) = LOWER\(\$1\)\s*$`,
+			expectedParam:   "testhost",
+		},
+		{
+			name: "First chunk force large first scans selected duplicate-size files",
+			options: HashOptions{
+				Server:     "testhost",
+				Refresh:    true,
+				FirstChunk: true,
+				LargeFirst: true,
+			},
+			expectedCountRe: `(?s)SELECT COUNT\(\*\) FROM files.*WHERE LOWER\(hostname\) = LOWER\(\$1\).*AND size IS NOT NULL.*HAVING COUNT\(\*\) > 1`,
+			expectedParam:   "testhost",
+		},
 	}
 
 	for _, tc := range tests {
@@ -131,6 +180,29 @@ func TestHashOptions(t *testing.T) {
 				t.Errorf("Unfulfilled expectations: %v", err)
 			}
 		})
+	}
+}
+
+func TestHashFilesRejectsConflictingHashModesBeforeDBAccess(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	if err != nil {
+		t.Fatalf("Failed to create mock database: %v", err)
+	}
+	defer db.Close()
+
+	err = HashFiles(context.Background(), db, HashOptions{
+		Server:     "testhost",
+		FirstChunk: true,
+		FullHash:   true,
+	})
+	if err == nil {
+		t.Fatal("expected conflicting hash mode error")
+	}
+	if !strings.Contains(err.Error(), "--first-chunk and --full-hash cannot be used together") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unexpected database access: %v", err)
 	}
 }
 
@@ -209,6 +281,76 @@ func TestHashFilesLargeFirstBatchQueryUsesSizeBookmark(t *testing.T) {
 	}
 	if !strings.Contains(batch, "LIMIT 100") {
 		t.Fatalf("expected large-first query to include LIMIT 100; got: %s", batch)
+	}
+}
+
+func TestHashFilesProcessesFirstChunkLargeFirstCombination(t *testing.T) {
+	var logBuffer bytes.Buffer
+	logging.InfoLogger = log.New(&logBuffer, "", 0)
+	logging.ErrorLogger = log.New(io.Discard, "", 0)
+
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	if err != nil {
+		t.Fatalf("Failed to create mock database: %v", err)
+	}
+	defer db.Close()
+	mock.MatchExpectationsInOrder(false)
+
+	root := t.TempDir()
+	prefix := strings.Repeat("x", int(firstChunkHashBytes))
+	firstContent := []byte(prefix + "suffix-0001")
+	secondContent := []byte(prefix + "suffix-0002")
+	if err := os.WriteFile(filepath.Join(root, "first.bin"), firstContent, 0644); err != nil {
+		t.Fatalf("write first file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "second.bin"), secondContent, 0644); err != nil {
+		t.Fatalf("write second file: %v", err)
+	}
+
+	expected := sha256.Sum256([]byte(prefix))
+	expectedHash := hex.EncodeToString(expected[:])
+
+	hostRows := sqlmock.NewRows([]string{"id", "name", "hostname", "ip", "root_path", "settings", "created_at"}).
+		AddRow(1, "Backup1", "backup1.local", "", root, []byte(`{}`), time.Now())
+	mock.ExpectQuery(`SELECT id, name, hostname, ip, root_path, settings, created_at FROM hosts WHERE LOWER\(hostname\) = LOWER\(\$1\)`).
+		WithArgs("backup1.local").
+		WillReturnRows(hostRows)
+
+	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\) FROM files.*WHERE LOWER\(hostname\) = LOWER\(\$1\).*AND hash IS NULL.*AND size IS NOT NULL.*HAVING COUNT\(\*\) > 1`).
+		WithArgs("backup1.local").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
+
+	updateRe := `(?s)UPDATE files\s+SET hash = \$1, last_hashed_at = NOW\(\)\s+WHERE id = \$2`
+	mock.ExpectPrepare(`(?s)UPDATE files\s+SET hash = 'TIMEOUT_ERROR', last_hashed_at = NOW\(\)\s+WHERE id = \$1`)
+	mock.ExpectPrepare(`(?s)UPDATE files\s+SET hash = 'HASH_ERROR', last_hashed_at = NOW\(\)\s+WHERE id = \$1`)
+
+	fileRows := sqlmock.NewRows([]string{"id", "path", "root_folder", "effective_size"}).
+		AddRow(1, "first.bin", root, int64(len(firstContent))).
+		AddRow(2, "second.bin", root, int64(len(secondContent)))
+	mock.ExpectQuery(`(?s)SELECT id, path, root_folder, COALESCE\(size, -1\) AS effective_size.*COALESCE\(size, -1\) < \$2::bigint.*ORDER BY COALESCE\(size, -1\) DESC, id ASC`).
+		WithArgs("backup1.local", nil, 0).
+		WillReturnRows(fileRows)
+
+	mock.ExpectPrepare(updateRe).
+		ExpectExec().
+		WithArgs(expectedHash, 1).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectPrepare(updateRe).
+		ExpectExec().
+		WithArgs(expectedHash, 2).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	err = HashFiles(context.Background(), db, HashOptions{
+		Server:     "backup1.local",
+		FirstChunk: true,
+		LargeFirst: true,
+	})
+	if err != nil {
+		t.Fatalf("HashFiles first-chunk large-first error: %v", err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v\nlogs:\n%s", err, logBuffer.String())
 	}
 }
 

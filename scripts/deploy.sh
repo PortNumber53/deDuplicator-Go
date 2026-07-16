@@ -13,6 +13,29 @@ BINARY_AMD64="${BINARY_AMD64:-dist/deduplicator-linux-amd64}"
 BINARY_ARM64="${BINARY_ARM64:-dist/deduplicator-linux-arm64}"
 LOCAL_MIGRATE_LOCK_DIR="${LOCAL_MIGRATE_LOCK_DIR:-/tmp/deduplicator-ci}"
 CONFIG_SAMPLE="${CONFIG_SAMPLE:-config.ini.sample}"
+SKIP_TESTS="${SKIP_TESTS:-0}"
+
+run_tests() {
+  if [[ "${SKIP_TESTS}" == "1" ]]; then
+    echo "Skipping pre-deploy tests because SKIP_TESTS=1"
+    return
+  fi
+
+  if ! command -v go >/dev/null 2>&1; then
+    echo "Go is required to run pre-deploy tests" >&2
+    exit 1
+  fi
+
+  echo "Running pre-deploy tests"
+  local test_cache
+  test_cache="${GOCACHE:-$(mktemp -d)}"
+  if [[ -z "${GOCACHE:-}" ]]; then
+    trap 'rm -rf "${test_cache}"' EXIT
+  fi
+  GOCACHE="${test_cache}" go test ./...
+}
+
+run_tests
 
 # Parse DB_URL into component env vars for app and config
 eval "$(python - <<'PY'

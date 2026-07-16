@@ -100,6 +100,61 @@ func TestFindDuplicateGroupsSeparatesSameHashDifferentSizes(t *testing.T) {
 	}
 }
 
+func TestDedupFilesDryRunHandlesSameHashDifferentSizes(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	tempDir := t.TempDir()
+	destDir := filepath.Join(tempDir, "dupes")
+
+	hostname, err := os.Hostname()
+	if err != nil {
+		t.Fatalf("hostname: %v", err)
+	}
+	lower := strings.ToLower(hostname)
+
+	mock.ExpectQuery(`SELECT hostname FROM hosts WHERE LOWER\(hostname\) = LOWER\(\$1\)`).
+		WithArgs(lower).
+		WillReturnRows(sqlmock.NewRows([]string{"hostname"}).AddRow("host-a"))
+
+	dupRows := sqlmock.NewRows([]string{"hash", "path", "hostname", "size"}).
+		AddRow("partial-hash", "small-a.bin", "host-a", int64(10)).
+		AddRow("partial-hash", "small-b.bin", "host-a", int64(10)).
+		AddRow("partial-hash", "large-a.bin", "host-a", int64(20)).
+		AddRow("partial-hash", "large-b.bin", "host-a", int64(20))
+
+	mock.ExpectQuery(`(?s)WITH duplicates.*GROUP BY hash, size.*JOIN files f ON f.hash = d.hash AND f.size = d.size`).
+		WithArgs("host-a").
+		WillReturnRows(dupRows)
+
+	mock.ExpectQuery(`SELECT root_path`).
+		WithArgs(lower).
+		WillReturnRows(sqlmock.NewRows([]string{"root_path"}).AddRow(tempDir))
+
+	err = DedupFiles(context.Background(), db, DedupeOptions{
+		DryRun:        true,
+		DestDir:       destDir,
+		StripPrefix:   "",
+		Count:         0,
+		IgnoreDestDir: false,
+		MinSize:       0,
+	})
+	if err != nil {
+		t.Fatalf("DedupFiles dry-run with partial-hash collision error: %v", err)
+	}
+
+	if _, statErr := os.Stat(destDir); !os.IsNotExist(statErr) {
+		t.Fatalf("expected destination not to be created in dry-run, stat err: %v", statErr)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
 func TestDedupFilesDryRunSkipsMoves(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {

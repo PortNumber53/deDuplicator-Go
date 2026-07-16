@@ -28,6 +28,16 @@ Feature: File ingest and hashing
     When I run `deduplicator files hash --large-first`
     Then rows with NULL hash and a size shared by another file are processed from largest size to smallest size
 
+  Scenario: Hashing with compatible combined flags
+    Given files rows for host "backup1.local" with some NULL hashes and repeated file sizes
+    When I run `deduplicator files hash --first-chunk --large-first`
+    Then rows with NULL hash and a size shared by another file are processed from largest size to smallest size using the first 1KiB
+
+  Scenario: Rejecting conflicting hash modes
+    Given files rows for host "backup1.local"
+    When I run `deduplicator files hash --first-chunk --full-hash`
+    Then the command fails before hashing because the hash modes conflict
+
   Scenario: Full hashing includes unique-size files
     Given files rows for host "backup1.local" with some NULL hashes
     When I run `deduplicator files hash --full-hash`

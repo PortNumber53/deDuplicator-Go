@@ -23,6 +23,11 @@ Feature: Duplicate detection and movement
     When I run `deduplicator files list-dupes --dest /tmp/dupes --ignore-dest true`
     Then that group is skipped to avoid re-moving files inside the destination tree
 
+  Scenario: Dedup separates partial-hash collisions by size
+    Given duplicate candidates have the same hash but different sizes
+    When I run `deduplicator files list-dupes --dest /tmp/dupes --dry-run`
+    Then files are grouped by both hash and size so dedupe reports valid groups without failing
+
   Scenario: Move-dupes requires a target and honors dry-run
     Given duplicate groups exist
     When I run `deduplicator files move-dupes --target /tmp/dupes --dry-run`
