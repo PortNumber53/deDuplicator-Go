@@ -6,6 +6,24 @@ import (
 	"testing"
 )
 
+func preserveEnv(t *testing.T, keys ...string) {
+	t.Helper()
+	orig := map[string]string{}
+	for _, key := range keys {
+		orig[key] = os.Getenv(key)
+		_ = os.Unsetenv(key)
+	}
+	t.Cleanup(func() {
+		for _, key := range keys {
+			if orig[key] == "" {
+				_ = os.Unsetenv(key)
+			} else {
+				_ = os.Setenv(key, orig[key])
+			}
+		}
+	})
+}
+
 func TestLoadConfigINISupportsDefaultSectionAndNoSection(t *testing.T) {
 	tmp := t.TempDir()
 	cfgPath := filepath.Join(tmp, "config.ini")
@@ -33,27 +51,13 @@ error_log_file=/var/log/dedupe/error.log
 		t.Fatalf("write config: %v", err)
 	}
 
-	// Clear relevant env vars for test
 	keys := []string{
 		"DB_HOST", "DB_PORT", "DB_USER", "DB_PASSWORD", "DB_NAME",
 		"LOCAL_MIGRATE_LOCK_DIR", "DEDUPLICATOR_LOCK_DIR",
 		"RABBITMQ_HOST", "RABBITMQ_PORT", "RABBITMQ_VHOST", "RABBITMQ_USER", "RABBITMQ_PASSWORD", "RABBITMQ_QUEUE",
 		"LOG_FILE", "ERROR_LOG_FILE",
 	}
-	orig := map[string]string{}
-	for _, k := range keys {
-		orig[k] = os.Getenv(k)
-		_ = os.Unsetenv(k)
-	}
-	t.Cleanup(func() {
-		for _, k := range keys {
-			if orig[k] == "" {
-				_ = os.Unsetenv(k)
-			} else {
-				_ = os.Setenv(k, orig[k])
-			}
-		}
-	})
+	preserveEnv(t, keys...)
 
 	loadConfigINI(cfgPath)
 
@@ -114,20 +118,7 @@ port=5433
 		t.Fatalf("write config: %v", err)
 	}
 
-	origHost := os.Getenv("DB_HOST")
-	origPort := os.Getenv("DB_PORT")
-	t.Cleanup(func() {
-		if origHost == "" {
-			_ = os.Unsetenv("DB_HOST")
-		} else {
-			_ = os.Setenv("DB_HOST", origHost)
-		}
-		if origPort == "" {
-			_ = os.Unsetenv("DB_PORT")
-		} else {
-			_ = os.Setenv("DB_PORT", origPort)
-		}
-	})
+	preserveEnv(t, "DB_HOST", "DB_PORT")
 
 	_ = os.Setenv("DB_HOST", "env-host")
 	_ = os.Setenv("DB_PORT", "9999")
@@ -139,5 +130,61 @@ port=5433
 	}
 	if got := os.Getenv("DB_PORT"); got != "9999" {
 		t.Fatalf("DB_PORT=%q, want %q", got, "9999")
+	}
+}
+
+func TestLoadConfigFilesDoesNotErrorWhenOptionalFilesAreMissing(t *testing.T) {
+	tmp := t.TempDir()
+	loaded, err := loadConfigFiles(filepath.Join(tmp, ".env"), filepath.Join(tmp, "config.ini"))
+	if err != nil {
+		t.Fatalf("loadConfigFiles returned error for missing optional files: %v", err)
+	}
+	if loaded {
+		t.Fatal("expected no config files to be loaded")
+	}
+}
+
+func TestLoadConfigFilesLoadsDotenvBeforeINI(t *testing.T) {
+	tmp := t.TempDir()
+	envPath := filepath.Join(tmp, ".env")
+	cfgPath := filepath.Join(tmp, "config.ini")
+	if err := os.WriteFile(envPath, []byte("DB_HOST=dotenv-host\n"), 0644); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+	if err := os.WriteFile(cfgPath, []byte("[database]\nhost=ini-host\n"), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	preserveEnv(t, "DB_HOST")
+
+	loaded, err := loadConfigFiles(envPath, cfgPath)
+	if err != nil {
+		t.Fatalf("loadConfigFiles returned error: %v", err)
+	}
+	if !loaded {
+		t.Fatal("expected a config file to be loaded")
+	}
+	if got := os.Getenv("DB_HOST"); got != "dotenv-host" {
+		t.Fatalf("DB_HOST=%q, want dotenv-host", got)
+	}
+}
+
+func TestMissingConfigRejectionSkipsHelpAndHonorsEnv(t *testing.T) {
+	keys := []string{
+		"DB_HOST", "DB_PORT", "DB_USER", "DB_PASSWORD", "DB_NAME",
+		"RABBITMQ_HOST", "RABBITMQ_PORT", "RABBITMQ_VHOST", "RABBITMQ_USER", "RABBITMQ_PASSWORD", "RABBITMQ_QUEUE",
+	}
+	preserveEnv(t, keys...)
+
+	if shouldRejectMissingConfig([]string{"deduplicator", "files", "prune", "--help"}, false) {
+		t.Fatal("help should not require config files")
+	}
+	if !shouldRejectMissingConfig([]string{"deduplicator", "files", "prune"}, false) {
+		t.Fatal("non-help command without config should be rejected")
+	}
+
+	_ = os.Setenv("DB_HOST", "db.example")
+	if shouldRejectMissingConfig([]string{"deduplicator", "files", "prune"}, false) {
+		t.Fatal("configured environment should satisfy startup config")
 	}
 }

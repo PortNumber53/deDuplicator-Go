@@ -3,8 +3,8 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
-	"log"
 	"net/url"
 	"os"
 	"os/signal"
@@ -22,11 +22,16 @@ import (
 // VERSION represents the current version of the deduplicator tool
 const VERSION = "1.4.3"
 
-func main() {
-	loadConfigINI("/etc/dedupe/config.ini")
+const (
+	defaultDotenvPath = ".env"
+	systemConfigPath  = "/etc/dedupe/config.ini"
+)
 
-	if err := godotenv.Load(); err != nil {
-		log.Printf("Warning: Error loading .env file: %v", err)
+func main() {
+	loadedConfig, err := loadConfigFiles(defaultDotenvPath, systemConfigPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading configuration: %v\n", err)
+		os.Exit(1)
 	}
 
 	logging.InitLoggers()
@@ -40,6 +45,10 @@ func main() {
 			fmt.Printf("Deduplicator %s\n", VERSION)
 			return
 		}
+	}
+
+	if shouldRejectMissingConfig(os.Args, loadedConfig) {
+		logging.ErrorLogger.Fatalf("no configuration file found: expected %s or %s", defaultDotenvPath, systemConfigPath)
 	}
 
 	// Create context that can be cancelled
@@ -63,6 +72,72 @@ func main() {
 	}
 }
 
+func loadConfigFiles(dotenvPath, iniPath string) (bool, error) {
+	loaded := false
+
+	if err := loadDotenv(dotenvPath); err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return false, err
+		}
+	} else {
+		loaded = true
+	}
+
+	iniLoaded, err := loadConfigINI(iniPath)
+	if err != nil {
+		return false, err
+	}
+	return loaded || iniLoaded, nil
+}
+
+func loadDotenv(path string) error {
+	if _, err := os.Stat(path); err != nil {
+		return err
+	}
+	return godotenv.Load(path)
+}
+
+func shouldRejectMissingConfig(args []string, loadedConfig bool) bool {
+	if loadedConfig || hasConfigEnvironment() || isHelpOrVersionRequest(args) {
+		return false
+	}
+	return len(args) > 1
+}
+
+func isHelpOrVersionRequest(args []string) bool {
+	for i, arg := range args {
+		if i == 0 {
+			continue
+		}
+		switch arg {
+		case "--help", "-h", "help", "--version", "-v":
+			return true
+		}
+	}
+	return false
+}
+
+func hasConfigEnvironment() bool {
+	for _, key := range []string{
+		"DB_HOST",
+		"DB_PORT",
+		"DB_USER",
+		"DB_PASSWORD",
+		"DB_NAME",
+		"RABBITMQ_HOST",
+		"RABBITMQ_PORT",
+		"RABBITMQ_VHOST",
+		"RABBITMQ_USER",
+		"RABBITMQ_PASSWORD",
+		"RABBITMQ_QUEUE",
+	} {
+		if os.Getenv(key) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // loadConfigINI reads a simple INI-style config and sets env vars if unset.
 //
 // Supported sections:
@@ -70,14 +145,13 @@ func main() {
 // - [database]
 // - [rabbitmq]
 // - [logging]
-func loadConfigINI(path string) {
+func loadConfigINI(path string) (bool, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		// Silent if missing; warn only on unexpected errors
-		if !os.IsNotExist(err) {
-			log.Printf("Warning: Error opening config %s: %v", path, err)
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
 		}
-		return
+		return false, fmt.Errorf("error opening config %s: %w", path, err)
 	}
 	defer f.Close()
 
@@ -191,7 +265,7 @@ func loadConfigINI(path string) {
 		}
 	}
 	if err := sc.Err(); err != nil {
-		log.Printf("Warning: Error reading config %s: %v", path, err)
+		return true, fmt.Errorf("error reading config %s: %w", path, err)
 	}
 
 	// Only set env vars if not already set
@@ -243,4 +317,6 @@ func loadConfigINI(path string) {
 	if os.Getenv("ERROR_LOG_FILE") == "" && logCfg.errorLogFile != "" {
 		os.Setenv("ERROR_LOG_FILE", logCfg.errorLogFile)
 	}
+
+	return true, nil
 }
