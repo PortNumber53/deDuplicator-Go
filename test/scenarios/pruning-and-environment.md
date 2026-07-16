@@ -13,6 +13,12 @@ Feature: Pruning and environment limits
     When I run `deduplicator files prune`
     Then the query applies a LIMIT between 1000 and 1099 rows for a quick iteration and reports based on the limited set
 
+  Scenario: Prune trusts each row's root_folder
+    Given file rows include duplicate entries that resolve to the same root_folder plus path target
+    And file rows include stale relative entries with no root_folder
+    When I run `deduplicator files prune`
+    Then duplicate resolved-path rows and rows without a usable root_folder are deleted
+
   Scenario: Prune cancellation stops mid-run
     Given prune is running
     When I cancel the context (Ctrl+C)

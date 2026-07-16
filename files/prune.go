@@ -20,6 +20,21 @@ type PruneOptions struct {
 	BatchSize int // Number of deletions per transaction commit
 }
 
+func pruneFullPath(dbPath string, rootFolder sql.NullString) (string, bool) {
+	root := ""
+	if rootFolder.Valid {
+		root = strings.TrimSpace(rootFolder.String)
+	}
+
+	if root != "" {
+		return filepath.Join(root, dbPath), true
+	}
+	if filepath.IsAbs(dbPath) {
+		return dbPath, true
+	}
+	return "", false
+}
+
 // PruneNonExistentFiles removes entries for files that no longer exist
 func PruneNonExistentFiles(ctx context.Context, sqldb *sql.DB, opts PruneOptions) error {
 	startTime := time.Now()
@@ -62,7 +77,7 @@ func PruneNonExistentFiles(ctx context.Context, sqldb *sql.DB, opts PruneOptions
 	}
 
 	// Get files for this host - use case-insensitive comparison
-	query := "SELECT id, path, root_folder FROM files WHERE LOWER(hostname) = LOWER($1)" + getRowLimitClause()
+	query := "SELECT id, path, root_folder FROM files WHERE LOWER(hostname) = LOWER($1) ORDER BY LENGTH(COALESCE(root_folder, '')) DESC, id ASC" + getRowLimitClause()
 	rows, err := sqldb.Query(query, host.Hostname)
 	if err != nil {
 		return fmt.Errorf("error querying files: %v", err)
@@ -102,8 +117,9 @@ func PruneNonExistentFiles(ctx context.Context, sqldb *sql.DB, opts PruneOptions
 		}))
 
 	// Check each file
-	var removedNonexistent, removedSymlinks, removedDevices, removedMissing int
+	var removedNonexistent, removedSymlinks, removedDevices, removedMissing, removedDuplicatePaths int
 	var checked int
+	seenFullPaths := make(map[string]int, totalFiles)
 	for rows.Next() {
 		select {
 		case <-ctx.Done():
@@ -126,8 +142,67 @@ func PruneNonExistentFiles(ctx context.Context, sqldb *sql.DB, opts PruneOptions
 			logging.InfoLogger.Printf("Checked %d/%d files...", checked, totalFiles)
 		}
 
-		// Use root_folder to construct the full path (empty string if NULL)
-		fullPath := filepath.Join(rootFolder.String, dbPath)
+		fullPath, validRoot := pruneFullPath(dbPath, rootFolder)
+		if !validRoot {
+			_, err = stmt.Exec(id)
+			if err != nil {
+				logging.ErrorLogger.Printf("Warning: Error deleting file with missing root_folder %s: %v", dbPath, err)
+				bar.Add(1)
+				continue
+			}
+			removedMissing++
+			batchDeletes++
+			logging.InfoLogger.Printf("Deleted entry for file missing root_folder: %s", dbPath)
+			if batchDeletes >= batchSize {
+				if err := tx.Commit(); err != nil {
+					return fmt.Errorf("error committing transaction: %v", err)
+				}
+				logging.InfoLogger.Printf("Committed batch of %d deletions", batchDeletes)
+				tx, err = sqldb.Begin()
+				if err != nil {
+					return fmt.Errorf("error starting new transaction: %v", err)
+				}
+				stmt, err = tx.Prepare(`DELETE FROM files WHERE id = $1`)
+				if err != nil {
+					return fmt.Errorf("error preparing statement: %v", err)
+				}
+				batchDeletes = 0
+			}
+			bar.Add(1)
+			continue
+		}
+
+		cleanFullPath := filepath.Clean(fullPath)
+		if firstID, seen := seenFullPaths[cleanFullPath]; seen {
+			_, err = stmt.Exec(id)
+			if err != nil {
+				logging.ErrorLogger.Printf("Warning: Error deleting duplicate path row %s: %v", dbPath, err)
+				bar.Add(1)
+				continue
+			}
+			removedDuplicatePaths++
+			batchDeletes++
+			logging.InfoLogger.Printf("Deleted duplicate DB row for %s; keeping row id %d", cleanFullPath, firstID)
+			if batchDeletes >= batchSize {
+				if err := tx.Commit(); err != nil {
+					return fmt.Errorf("error committing transaction: %v", err)
+				}
+				logging.InfoLogger.Printf("Committed batch of %d deletions", batchDeletes)
+				tx, err = sqldb.Begin()
+				if err != nil {
+					return fmt.Errorf("error starting new transaction: %v", err)
+				}
+				stmt, err = tx.Prepare(`DELETE FROM files WHERE id = $1`)
+				if err != nil {
+					return fmt.Errorf("error preparing statement: %v", err)
+				}
+				batchDeletes = 0
+			}
+			bar.Add(1)
+			continue
+		}
+		seenFullPaths[cleanFullPath] = id
+
 		fileInfo, err := os.Lstat(fullPath)
 		if err != nil {
 			// Could not stat the file for any reason – treat as non-existent
@@ -235,7 +310,8 @@ func PruneNonExistentFiles(ctx context.Context, sqldb *sql.DB, opts PruneOptions
 	fmt.Printf("Removed %d entries for non-existent files\n", removedNonexistent)
 	fmt.Printf("Removed %d entries for symlinks\n", removedSymlinks)
 	fmt.Printf("Removed %d entries for device files\n", removedDevices)
-	fmt.Printf("Removed %d entries for missing friendly paths\n", removedMissing)
+	fmt.Printf("Removed %d entries for missing root_folder\n", removedMissing)
+	fmt.Printf("Removed %d duplicate rows for the same resolved path\n", removedDuplicatePaths)
 	fmt.Printf("Wall time: %s\n", elapsed.Round(time.Millisecond))
 	return nil
 }
