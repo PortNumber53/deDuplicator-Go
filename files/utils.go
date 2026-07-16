@@ -55,10 +55,11 @@ func FindDuplicateGroups(ctx context.Context, db *sql.DB, hostname string, minSi
 	// Build query based on options
 	query := `
 		WITH duplicates AS (
-			SELECT hash, COUNT(*) as count, SUM(size) as total_size
+			SELECT hash, size, COUNT(*) as count, SUM(size) as total_size
 			FROM files
 			WHERE hash IS NOT NULL
 			AND hash NOT IN ('TIMEOUT_ERROR', 'HASH_ERROR')
+			AND size IS NOT NULL
 			AND LOWER(hostname) = LOWER($1)
 	`
 	var args []interface{}
@@ -72,26 +73,26 @@ func FindDuplicateGroups(ctx context.Context, db *sql.DB, hostname string, minSi
 	}
 
 	query += `
-			GROUP BY hash
+			GROUP BY hash, size
 			HAVING COUNT(*) > 1
 	`
 
 	// If count is specified, limit the number of duplicate groups
 	if count > 0 {
 		argCount++
-		query += fmt.Sprintf(" ORDER BY total_size DESC LIMIT $%d", argCount)
+		query += fmt.Sprintf(" ORDER BY total_size DESC, hash, size LIMIT $%d", argCount)
 		args = append(args, count)
 	} else {
-		query += ` ORDER BY total_size DESC`
+		query += ` ORDER BY total_size DESC, hash, size`
 	}
 
 	query += `
 		)
 		SELECT f.hash, f.path, f.hostname, f.size
 		FROM duplicates d
-		JOIN files f ON f.hash = d.hash
+		JOIN files f ON f.hash = d.hash AND f.size = d.size
 		WHERE LOWER(f.hostname) = LOWER($1)
-		ORDER BY d.total_size DESC, d.hash, f.path
+		ORDER BY d.total_size DESC, d.hash, d.size, f.path
 	`
 
 	// Query duplicate groups
@@ -103,6 +104,7 @@ func FindDuplicateGroups(ctx context.Context, db *sql.DB, hostname string, minSi
 
 	// Process results
 	var currentHash string
+	var currentSize int64
 	var currentGroup DuplicateGroup
 	var groups []DuplicateGroup
 
@@ -114,11 +116,12 @@ func FindDuplicateGroups(ctx context.Context, db *sql.DB, hostname string, minSi
 			return nil, fmt.Errorf("error scanning row: %v", err)
 		}
 
-		if hash != currentHash {
+		if hash != currentHash || size != currentSize {
 			if currentHash != "" {
 				groups = append(groups, currentGroup)
 			}
 			currentHash = hash
+			currentSize = size
 			currentGroup = DuplicateGroup{
 				Hash:  hash,
 				Size:  size,

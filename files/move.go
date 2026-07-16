@@ -48,9 +48,10 @@ func MoveDuplicates(ctx context.Context, db *sql.DB, opts DuplicateListOptions, 
 	// Build query based on options
 	query := `
 		WITH duplicate_hashes AS (
-			SELECT hash, SUM(size) as total_size
+			SELECT hash, size, SUM(size) as total_size
 			FROM files
 			WHERE hash IS NOT NULL
+			AND size IS NOT NULL
 			AND LOWER(hostname) = LOWER($1)
 	`
 	var args []interface{}
@@ -64,9 +65,9 @@ func MoveDuplicates(ctx context.Context, db *sql.DB, opts DuplicateListOptions, 
 	}
 
 	query += `
-			GROUP BY hash
+			GROUP BY hash, size
 			HAVING COUNT(*) > 1
-			ORDER BY total_size DESC, hash
+			ORDER BY total_size DESC, hash, size
 	`
 	if opts.Count > 0 {
 		argCount++
@@ -77,9 +78,9 @@ func MoveDuplicates(ctx context.Context, db *sql.DB, opts DuplicateListOptions, 
 		)
 		SELECT f.hash, f.path, f.hostname, f.size, COALESCE(f.root_folder, '') as root_folder
 		FROM duplicate_hashes d
-		JOIN files f ON f.hash = d.hash
+		JOIN files f ON f.hash = d.hash AND f.size = d.size
 		WHERE LOWER(f.hostname) = LOWER($1)
-		ORDER BY d.total_size DESC, d.hash, f.path
+		ORDER BY d.total_size DESC, d.hash, d.size, f.path
 	`
 
 	// Query duplicate groups
@@ -91,6 +92,7 @@ func MoveDuplicates(ctx context.Context, db *sql.DB, opts DuplicateListOptions, 
 
 	// Process results
 	var currentHash string
+	var currentSize int64
 	var currentGroup struct {
 		Hash      string
 		Files     []string
@@ -108,7 +110,7 @@ func MoveDuplicates(ctx context.Context, db *sql.DB, opts DuplicateListOptions, 
 			return fmt.Errorf("error scanning row: %v", err)
 		}
 
-		if hash != currentHash {
+		if hash != currentHash || size != currentSize {
 			// Process previous group
 			if currentHash != "" {
 				if err := moveGroupDuplicates(currentGroup, moveOpts, db); err != nil {
@@ -120,6 +122,7 @@ func MoveDuplicates(ctx context.Context, db *sql.DB, opts DuplicateListOptions, 
 
 			// Start new group
 			currentHash = hash
+			currentSize = size
 			currentGroup = struct {
 				Hash      string
 				Files     []string

@@ -100,6 +100,7 @@ func findGroupDuplicates(ctx context.Context, database *sql.DB, members []db.Pat
 			FROM files f
 			JOIN hosts h ON LOWER(f.hostname) = LOWER(h.hostname)
 			WHERE f.hash IS NOT NULL
+			AND f.size IS NOT NULL
 			AND (
 	`
 
@@ -144,11 +145,11 @@ func findGroupDuplicates(ctx context.Context, database *sql.DB, members []db.Pat
 
 	query += `
 		)
-		SELECT hash, COUNT(*) as count, SUM(size) as total_size
+		SELECT hash, size, COUNT(*) as count, SUM(size) as total_size
 		FROM group_files
-		GROUP BY hash
+		GROUP BY hash, size
 		HAVING COUNT(*) > 1
-		ORDER BY total_size DESC, hash
+		ORDER BY total_size DESC, hash, size
 	`
 
 	if opts.Count > 0 {
@@ -163,25 +164,30 @@ func findGroupDuplicates(ctx context.Context, database *sql.DB, members []db.Pat
 	}
 	defer rows.Close()
 
-	var hashes []string
+	type duplicateKey struct {
+		hash string
+		size int64
+	}
+	var duplicates []duplicateKey
 	for rows.Next() {
 		var hash string
+		var size int64
 		var count int
 		var totalSize int64
-		if err := rows.Scan(&hash, &count, &totalSize); err != nil {
+		if err := rows.Scan(&hash, &size, &count, &totalSize); err != nil {
 			return nil, err
 		}
-		hashes = append(hashes, hash)
+		duplicates = append(duplicates, duplicateKey{hash: hash, size: size})
 	}
 
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
-	// Now get all file locations for each hash
+	// Now get all file locations for each duplicate hash/size pair.
 	var result [][]FileLocation
-	for _, hash := range hashes {
-		locations, err := getFileLocationsForHash(ctx, database, hash, members)
+	for _, duplicate := range duplicates {
+		locations, err := getFileLocationsForHash(ctx, database, duplicate.hash, duplicate.size, members)
 		if err != nil {
 			return nil, err
 		}
@@ -193,8 +199,8 @@ func findGroupDuplicates(ctx context.Context, database *sql.DB, members []db.Pat
 	return result, nil
 }
 
-// getFileLocationsForHash gets all file locations for a specific hash within the group
-func getFileLocationsForHash(ctx context.Context, database *sql.DB, hash string, members []db.PathGroupMember) ([]FileLocation, error) {
+// getFileLocationsForHash gets all file locations for a specific hash and size within the group.
+func getFileLocationsForHash(ctx context.Context, database *sql.DB, hash string, size int64, members []db.PathGroupMember) ([]FileLocation, error) {
 	// Create a map of host+path to priority
 	priorityMap := make(map[string]int)
 	friendlyPathMap := make(map[string]string)
@@ -220,10 +226,11 @@ func getFileLocationsForHash(ctx context.Context, database *sql.DB, hash string,
 		FROM files f
 		JOIN hosts h ON LOWER(f.hostname) = LOWER(h.hostname)
 		WHERE f.hash = $1
+		AND f.size = $2
 		ORDER BY f.hostname, f.path
 	`
 
-	rows, err := database.QueryContext(ctx, query, hash)
+	rows, err := database.QueryContext(ctx, query, hash, size)
 	if err != nil {
 		return nil, err
 	}

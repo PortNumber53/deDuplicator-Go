@@ -157,14 +157,19 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 
 		// Parse hash command flags
 		hashCmd := flag.NewFlagSet("hash", flag.ExitOnError)
-		force := hashCmd.Bool("force", false, "Rehash files even if they already have a hash")
+		force := hashCmd.Bool("force", false, "Rehash selected files even if they already have a hash")
 		renew := hashCmd.Bool("renew", false, "Recalculate hashes older than 1 week")
 		retryProblematic := hashCmd.Bool("retry-problematic", false, "Retry files that previously timed out")
+		firstChunk := hashCmd.Bool("first-chunk", false, "Hash only the first 1KiB of files with duplicate sizes")
+		fullHash := hashCmd.Bool("full-hash", false, "Hash full contents for all eligible files")
 		_ = hashCmd.Int("count", 0, "Process only N files (0 = unlimited)")
 
 		if err := hashCmd.Parse(args[1:]); err != nil {
 			fmt.Printf("Error: failed to parse hash command flags: %v\n", err)
 			return err
+		}
+		if *firstChunk && *fullHash {
+			return fmt.Errorf("--first-chunk and --full-hash cannot be used together")
 		}
 
 		// Get hostname for current machine
@@ -199,6 +204,8 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 			Refresh:          *force,
 			Renew:            *renew,
 			RetryProblematic: *retryProblematic,
+			FirstChunk:       *firstChunk,
+			FullHash:         *fullHash,
 		})
 		if err != nil {
 			if strings.Contains(err.Error(), "no files need hashing") || strings.Contains(err.Error(), "No files need hashing") {

@@ -33,35 +33,27 @@ func buildHashWhereClause(opts HashOptions) string {
 		}
 	}
 
+	if !opts.FullHash {
+		whereClause += `
+		AND size IS NOT NULL
+		AND size IN (
+			SELECT size
+			FROM files
+			WHERE LOWER(hostname) = LOWER($1)
+			AND size IS NOT NULL
+			GROUP BY size
+			HAVING COUNT(*) > 1
+		)`
+	}
+
 	return whereClause
 }
 
-func buildHashNextSizeQuery(whereClause string) string {
-	return fmt.Sprintf(
-		`SELECT COALESCE(size, -1)
-		FROM files %s AND id > $2
-		ORDER BY 
-			CASE 
-				WHEN hash IN ('TIMEOUT_ERROR', 'HASH_ERROR') THEN 0 
-				ELSE 1 
-			END,
-			COALESCE(size, -1) DESC, 
-			id ASC
-		LIMIT 1`,
-		whereClause,
-	)
-}
-
-func buildHashInnerBatchQuery(whereClause string, batchSize int) string {
+func buildHashBatchQuery(whereClause string, batchSize int) string {
 	return fmt.Sprintf(
 		`SELECT id, path, root_folder
-		FROM files %s AND COALESCE(size, -1) = $3 AND id > $2
-		ORDER BY 
-			CASE 
-				WHEN hash IN ('TIMEOUT_ERROR', 'HASH_ERROR') THEN 0 
-				ELSE 1 
-			END,
-			id ASC
+		FROM files %s AND id > $2
+		ORDER BY id ASC
 		LIMIT %d`,
 		whereClause,
 		batchSize,
@@ -70,6 +62,10 @@ func buildHashInnerBatchQuery(whereClause string, batchSize int) string {
 
 // HashFiles calculates hashes for files in the database
 func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
+	if opts.FirstChunk && opts.FullHash {
+		return fmt.Errorf("--first-chunk and --full-hash cannot be used together")
+	}
+
 	// Get host information by hostname (case-insensitive)
 	host, err := db.GetHostByHostname(sqldb, opts.Server)
 	if err != nil {
@@ -155,6 +151,7 @@ func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
 	// Track statistics
 	var processed, skipped int64
 
+	batchQuery := buildHashBatchQuery(whereClause, batchSize)
 	for {
 		// Check for context cancellation
 		select {
@@ -163,113 +160,95 @@ func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
 		default:
 		}
 
-		// Pick the next size group to process (largest remaining effective size first).
-		// `COALESCE(size, -1)` ensures NULL sizes are grouped deterministically.
-		var targetEffectiveSize int64
-		nextSizeQuery := buildHashNextSizeQuery(whereClause)
-		err := sqldb.QueryRow(nextSizeQuery, hostname, lastID).Scan(&targetEffectiveSize)
-		if err == sql.ErrNoRows {
-			break
-		}
+		rows, err := sqldb.Query(batchQuery, hostname, lastID)
 		if err != nil {
-			return fmt.Errorf("error selecting next size group: %v", err)
+			return fmt.Errorf("error querying files: %v", err)
 		}
 
-		// Process this size group in batches until it is exhausted.
-		for {
-			innerBatchQuery := buildHashInnerBatchQuery(whereClause, batchSize)
-			rows, err := sqldb.Query(innerBatchQuery, hostname, lastID, targetEffectiveSize)
+		fileCount := 0
+		for rows.Next() {
+			select {
+			case <-ctx.Done():
+				rows.Close()
+				// fmt.Printf("\nOperation cancelled after processing %d files\n", processed)
+				return fmt.Errorf("operation cancelled")
+			default:
+			}
+			var id int
+			var dbPath string
+			var rootFolder sql.NullString
+			err := rows.Scan(&id, &dbPath, &rootFolder)
 			if err != nil {
-				return fmt.Errorf("error querying files: %v", err)
+				logging.InfoLogger.Printf("Warning: Error scanning row: %v", err)
+				continue
 			}
 
-			fileCount := 0
-			for rows.Next() {
-				select {
-				case <-ctx.Done():
-					rows.Close()
-					// fmt.Printf("\nOperation cancelled after processing %d files\n", processed)
-					return fmt.Errorf("operation cancelled")
-				default:
-				}
-				var id int
-				var dbPath string
-				var rootFolder sql.NullString
-				err := rows.Scan(&id, &dbPath, &rootFolder)
-				if err != nil {
-					logging.InfoLogger.Printf("Warning: Error scanning row: %v", err)
-					continue
-				}
+			// Update lastID to the current file's id
+			lastID = id
+			fileCount++
 
-				// Update lastID to the current file's id
-				lastID = id
-				fileCount++
+			// Construct the full dbPath from root_folder + dbPath
+			fullPath := filepath.Join(rootFolder.String, dbPath)
 
-				// Construct the full dbPath from root_folder + dbPath
-				fullPath := filepath.Join(rootFolder.String, dbPath)
+			// Display the file name before hashing
+			logging.InfoLogger.Printf("Hashing file: %s", filepath.Base(dbPath))
 
-				// Display the file name before hashing
-				logging.InfoLogger.Printf("Hashing file: %s", filepath.Base(dbPath))
-
-				// Calculate hash - this will block until the hash is complete or times out
-				hash, err := calculateFileHash(fullPath)
-				if err != nil {
-					if strings.Contains(err.Error(), "hashing timed out") || strings.Contains(err.Error(), "hashing operation cancelled") {
-						logging.InfoLogger.Printf("Warning: Timeout while hashing file %s: %v", dbPath, err)
-						// Mark file as problematic in the database
-						_, dbErr := skipStmt.Exec(id)
-						if dbErr != nil {
-							logging.InfoLogger.Printf("Warning: Error marking file as problematic: %v", dbErr)
-						} else {
-							skipped++
-							logging.InfoLogger.Printf("Marked file as problematic: %s", dbPath)
-						}
+			// Calculate hash - this will block until the hash is complete or times out
+			var hash string
+			if opts.FirstChunk {
+				hash, err = calculateFileFirstChunkHash(fullPath)
+			} else {
+				hash, err = calculateFileHash(fullPath)
+			}
+			if err != nil {
+				if strings.Contains(err.Error(), "hashing timed out") || strings.Contains(err.Error(), "hashing operation cancelled") {
+					logging.InfoLogger.Printf("Warning: Timeout while hashing file %s: %v", dbPath, err)
+					// Mark file as problematic in the database
+					_, dbErr := skipStmt.Exec(id)
+					if dbErr != nil {
+						logging.InfoLogger.Printf("Warning: Error marking file as problematic: %v", dbErr)
 					} else {
-						logging.InfoLogger.Printf("Warning: Error hashing file %s: %v", dbPath, err)
-						_, dbErr := hashErrStmt.Exec(id)
-						if dbErr != nil {
-							logging.InfoLogger.Printf("Warning: Error marking file as hash error: %v", dbErr)
-						}
+						skipped++
+						logging.InfoLogger.Printf("Marked file as problematic: %s", dbPath)
 					}
-					bar.Add(1)
-					continue
+				} else {
+					logging.InfoLogger.Printf("Warning: Error hashing file %s: %v", dbPath, err)
+					_, dbErr := hashErrStmt.Exec(id)
+					if dbErr != nil {
+						logging.InfoLogger.Printf("Warning: Error marking file as hash error: %v", dbErr)
+					}
 				}
-
-				// Update database
-				_, err = stmt.Exec(hash, id)
-				if err != nil {
-					logging.InfoLogger.Printf("Warning: Error updating hash for file %s: %v", dbPath, err)
-					continue
-				}
-
-				processed++
 				bar.Add(1)
-
-				// Check for context cancellation after each file
-				select {
-				case <-ctx.Done():
-					rows.Close()
-					return fmt.Errorf("operation cancelled after processing %d of %d files", processed+skipped, totalFiles)
-				default:
-				}
+				continue
 			}
 
-			rows.Close()
-
-			if err := rows.Err(); err != nil {
-				return fmt.Errorf("error iterating rows: %v", err)
+			// Update database
+			_, err = stmt.Exec(hash, id)
+			if err != nil {
+				logging.InfoLogger.Printf("Warning: Error updating hash for file %s: %v", dbPath, err)
+				continue
 			}
 
-			if fileCount < batchSize {
-				// Size group exhausted.
-				break
+			processed++
+			bar.Add(1)
+
+			// Check for context cancellation after each file
+			select {
+			case <-ctx.Done():
+				rows.Close()
+				return fmt.Errorf("operation cancelled after processing %d of %d files", processed+skipped, totalFiles)
+			default:
 			}
-			// Otherwise, continue fetching the next page of the same size group.
-			// (`lastID` will have been advanced to the max id we just processed.)
-			if fileCount == 0 {
-				// Defensive fallback: avoid tight loops if the DB changes unexpectedly.
-				break
-			}
+		}
+
+		rows.Close()
+
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("error iterating rows: %v", err)
+		}
+
+		if fileCount < batchSize {
+			break
 		}
 	}
 

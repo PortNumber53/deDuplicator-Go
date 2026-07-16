@@ -44,19 +44,20 @@ type MoveOptions struct {
 
 // PruneOptions represents options for the prune command
 
-
 // HashOptions represents options for the hash command
 type HashOptions struct {
 	Server           string
-	Refresh          bool // hash all files regardless of existing hash
+	Refresh          bool // hash selected files regardless of existing hash
 	Renew            bool // hash files with hashes older than 1 week
 	RetryProblematic bool // retry files that previously timed out
+	FirstChunk       bool // hash only the first chunk of candidate files
+	FullHash         bool // hash all eligible files instead of only duplicate-size candidates
 }
 
 // FindOptions represents options for the find command
 type FindOptions struct {
 	Server      string
 	Path        string // Optional friendly path to filter on
-	MinimumSize int64 // Minimum file size to consider
-	NumWorkers  int   // Number of worker goroutines to use
+	MinimumSize int64  // Minimum file size to consider
+	NumWorkers  int    // Number of worker goroutines to use
 }

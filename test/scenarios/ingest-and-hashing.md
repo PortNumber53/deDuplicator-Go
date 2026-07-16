@@ -13,10 +13,20 @@ Feature: File ingest and hashing
     When I run `deduplicator files find --server Backup1 --path photos`
     Then every regular file under /data/photos is stored with path relative to /data/photos and root_folder set to "/data/photos"
 
-  Scenario: Hashing only unhashed files by default
-    Given files rows for host "backup1.local" with some NULL hashes
+  Scenario: Hashing only unhashed duplicate-size files by default
+    Given files rows for host "backup1.local" with some NULL hashes and repeated file sizes
     When I run `deduplicator files hash`
-    Then only rows with NULL hash are processed, their SHA256 is stored, and last_hashed_at is updated
+    Then only rows with NULL hash and a size shared by another file are processed, their SHA256 is stored, and last_hashed_at is updated
+
+  Scenario: Hashing the first chunk for duplicate-size files
+    Given files rows for host "backup1.local" with some NULL hashes and repeated file sizes
+    When I run `deduplicator files hash --first-chunk`
+    Then only rows with NULL hash and a size shared by another file are processed using the first 1KiB
+
+  Scenario: Full hashing includes unique-size files
+    Given files rows for host "backup1.local" with some NULL hashes
+    When I run `deduplicator files hash --full-hash`
+    Then every row with NULL hash is processed regardless of file size uniqueness
 
   Scenario: Retrying problematic hashes marks TIMEOUT_ERROR and retries them
     Given a file that timed out and is marked TIMEOUT_ERROR

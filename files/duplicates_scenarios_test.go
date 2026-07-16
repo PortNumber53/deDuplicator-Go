@@ -57,6 +57,49 @@ func TestFindDuplicateGroupsRespectsFiltersAndOrdering(t *testing.T) {
 	}
 }
 
+func TestFindDuplicateGroupsSeparatesSameHashDifferentSizes(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	hostname, err := os.Hostname()
+	if err != nil {
+		t.Fatalf("hostname: %v", err)
+	}
+	lower := strings.ToLower(hostname)
+
+	mock.ExpectQuery(`SELECT hostname FROM hosts WHERE LOWER\(hostname\) = LOWER\(\$1\)`).
+		WithArgs(lower).
+		WillReturnRows(sqlmock.NewRows([]string{"hostname"}).AddRow("host-a"))
+
+	dupRows := sqlmock.NewRows([]string{"hash", "path", "hostname", "size"}).
+		AddRow("same-hash", "/data/a1", "host-a", int64(10)).
+		AddRow("same-hash", "/data/a2", "host-a", int64(10)).
+		AddRow("same-hash", "/data/b1", "host-a", int64(20)).
+		AddRow("same-hash", "/data/b2", "host-a", int64(20))
+
+	mock.ExpectQuery(`(?s)WITH duplicates.*GROUP BY hash, size.*JOIN files f ON f.hash = d.hash AND f.size = d.size`).
+		WithArgs("host-a").
+		WillReturnRows(dupRows)
+
+	groups, err := FindDuplicateGroups(context.Background(), db, lower, 0, 0)
+	if err != nil {
+		t.Fatalf("FindDuplicateGroups error: %v", err)
+	}
+	if len(groups) != 2 {
+		t.Fatalf("expected 2 groups, got %d: %+v", len(groups), groups)
+	}
+	if groups[0].Size != 10 || groups[1].Size != 20 {
+		t.Fatalf("expected groups split by size, got %+v", groups)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
 func TestDedupFilesDryRunSkipsMoves(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {

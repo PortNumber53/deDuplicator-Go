@@ -21,23 +21,47 @@ func TestHashOptions(t *testing.T) {
 		expectedParam   interface{}
 	}{
 		{
-			name: "Hash only files without hashes",
+			name: "Hash only files without hashes and duplicate sizes",
 			options: HashOptions{
 				Server:           "testhost",
 				Refresh:          false,
 				Renew:            false,
 				RetryProblematic: false,
 			},
-			expectedCountRe: `(?s)SELECT COUNT\(\*\) FROM files.*WHERE LOWER\(hostname\) = LOWER\(\$1\) AND hash IS NULL`,
+			expectedCountRe: `(?s)SELECT COUNT\(\*\) FROM files.*WHERE LOWER\(hostname\) = LOWER\(\$1\).*AND hash IS NULL.*AND size IS NOT NULL.*HAVING COUNT\(\*\) > 1`,
 			expectedParam:   "testhost",
 		},
 		{
-			name: "Refresh all files",
+			name: "Refresh duplicate-size files",
 			options: HashOptions{
 				Server:           "testhost",
 				Refresh:          true,
 				Renew:            false,
 				RetryProblematic: false,
+			},
+			expectedCountRe: `(?s)SELECT COUNT\(\*\) FROM files.*WHERE LOWER\(hostname\) = LOWER\(\$1\).*AND size IS NOT NULL.*HAVING COUNT\(\*\) > 1`,
+			expectedParam:   "testhost",
+		},
+		{
+			name: "Full hash scans all unhashed files",
+			options: HashOptions{
+				Server:           "testhost",
+				Refresh:          false,
+				Renew:            false,
+				RetryProblematic: false,
+				FullHash:         true,
+			},
+			expectedCountRe: `(?s)SELECT COUNT\(\*\) FROM files.*WHERE LOWER\(hostname\) = LOWER\(\$1\) AND hash IS NULL\s*$`,
+			expectedParam:   "testhost",
+		},
+		{
+			name: "Full hash with refresh scans all files",
+			options: HashOptions{
+				Server:           "testhost",
+				Refresh:          true,
+				Renew:            false,
+				RetryProblematic: false,
+				FullHash:         true,
 			},
 			expectedCountRe: `(?s)SELECT COUNT\(\*\) FROM files.*WHERE LOWER\(hostname\) = LOWER\(\$1\)\s*$`,
 			expectedParam:   "testhost",
@@ -50,7 +74,7 @@ func TestHashOptions(t *testing.T) {
 				Renew:            true,
 				RetryProblematic: false,
 			},
-			expectedCountRe: `(?s)SELECT COUNT\(\*\) FROM files.*WHERE LOWER\(hostname\) = LOWER\(\$1\) AND \(hash IS NULL OR last_hashed_at < NOW\(\) - INTERVAL '1 week'\)`,
+			expectedCountRe: `(?s)SELECT COUNT\(\*\) FROM files.*WHERE LOWER\(hostname\) = LOWER\(\$1\).*AND \(hash IS NULL OR last_hashed_at < NOW\(\) - INTERVAL '1 week'\).*AND size IS NOT NULL.*HAVING COUNT\(\*\) > 1`,
 			expectedParam:   "testhost",
 		},
 		{
@@ -61,7 +85,7 @@ func TestHashOptions(t *testing.T) {
 				Renew:            false,
 				RetryProblematic: true,
 			},
-			expectedCountRe: `(?s)SELECT COUNT\(\*\) FROM files.*WHERE LOWER\(hostname\) = LOWER\(\$1\) AND \(hash IS NULL OR hash IN \('TIMEOUT_ERROR', 'HASH_ERROR'\)\)`,
+			expectedCountRe: `(?s)SELECT COUNT\(\*\) FROM files.*WHERE LOWER\(hostname\) = LOWER\(\$1\).*AND \(hash IS NULL OR hash IN \('TIMEOUT_ERROR', 'HASH_ERROR'\)\).*AND size IS NOT NULL.*HAVING COUNT\(\*\) > 1`,
 			expectedParam:   "testhost",
 		},
 		{
@@ -72,7 +96,7 @@ func TestHashOptions(t *testing.T) {
 				Renew:            true,
 				RetryProblematic: true,
 			},
-			expectedCountRe: `(?s)SELECT COUNT\(\*\) FROM files.*WHERE LOWER\(hostname\) = LOWER\(\$1\) AND \(hash IS NULL OR hash IN \('TIMEOUT_ERROR', 'HASH_ERROR'\) OR last_hashed_at < NOW\(\) - INTERVAL '1 week'\)`,
+			expectedCountRe: `(?s)SELECT COUNT\(\*\) FROM files.*WHERE LOWER\(hostname\) = LOWER\(\$1\).*AND \(hash IS NULL OR hash IN \('TIMEOUT_ERROR', 'HASH_ERROR'\) OR last_hashed_at < NOW\(\) - INTERVAL '1 week'\).*AND size IS NOT NULL.*HAVING COUNT\(\*\) > 1`,
 			expectedParam:   "testhost",
 		},
 	}
@@ -148,30 +172,50 @@ func TestHashFilesBatchQueryDoesNotBreakWithLocalEnvironmentLimit(t *testing.T) 
 		RetryProblematic: false,
 	})
 
-	inner := buildHashInnerBatchQuery(whereClause, 100)
-	if !strings.Contains(inner, "COALESCE(size, -1) = $3") {
-		t.Fatalf("expected batch query to filter by effective size; got: %s", inner)
+	batch := buildHashBatchQuery(whereClause, 100)
+	if !strings.Contains(batch, "id > $2") {
+		t.Fatalf("expected batch query to use an id bookmark; got: %s", batch)
 	}
 
-	if !strings.Contains(inner, "ORDER BY") || !strings.Contains(inner, "CASE") || !strings.Contains(inner, "WHEN hash IN ('TIMEOUT_ERROR', 'HASH_ERROR') THEN 0") {
-		t.Fatalf("expected batch query to order by CASE WHEN for error files priority; got: %s", inner)
+	if !strings.Contains(batch, "ORDER BY id ASC") {
+		t.Fatalf("expected batch query to order by id for bookmark pagination; got: %s", batch)
 	}
-	if !strings.Contains(inner, "LIMIT 100") {
-		t.Fatalf("expected batch query to include LIMIT 100; got: %s", inner)
+	if !strings.Contains(batch, "LIMIT 100") {
+		t.Fatalf("expected batch query to include LIMIT 100; got: %s", batch)
 	}
 
-	idxOrder := strings.Index(inner, "ORDER BY")
-	idxLimit := strings.Index(inner, "LIMIT")
+	idxOrder := strings.Index(batch, "ORDER BY")
+	idxLimit := strings.Index(batch, "LIMIT")
 	if idxOrder == -1 || idxLimit == -1 || idxLimit < idxOrder {
-		t.Fatalf("expected LIMIT after ORDER BY; got: %s", inner)
+		t.Fatalf("expected LIMIT after ORDER BY; got: %s", batch)
+	}
+}
+
+func TestHashWhereClauseModeSelection(t *testing.T) {
+	defaultWhere := buildHashWhereClause(HashOptions{})
+	if !strings.Contains(defaultWhere, "hash IS NULL") {
+		t.Fatalf("default mode should only select unhashed files; got: %s", defaultWhere)
+	}
+	if !strings.Contains(defaultWhere, "HAVING COUNT(*) > 1") {
+		t.Fatalf("default mode should filter to duplicate file sizes; got: %s", defaultWhere)
 	}
 
-	next := buildHashNextSizeQuery(whereClause)
-	if !strings.Contains(next, "ORDER BY") || !strings.Contains(next, "CASE") || !strings.Contains(next, "WHEN hash IN ('TIMEOUT_ERROR', 'HASH_ERROR') THEN 0") {
-		t.Fatalf("expected next-size query to order by CASE WHEN for error files priority; got: %s", next)
+	firstChunkWhere := buildHashWhereClause(HashOptions{FirstChunk: true})
+	if !strings.Contains(firstChunkWhere, "hash IS NULL") || !strings.Contains(firstChunkWhere, "HAVING COUNT(*) > 1") {
+		t.Fatalf("first-chunk mode should select unhashed duplicate-size files; got: %s", firstChunkWhere)
 	}
-	if !strings.Contains(next, "LIMIT 1") {
-		t.Fatalf("expected next-size query to include LIMIT 1; got: %s", next)
+
+	fullHashWhere := buildHashWhereClause(HashOptions{FullHash: true})
+	if !strings.Contains(fullHashWhere, "hash IS NULL") {
+		t.Fatalf("full-hash mode should select unhashed files by default; got: %s", fullHashWhere)
+	}
+	if strings.Contains(fullHashWhere, "HAVING COUNT(*) > 1") {
+		t.Fatalf("full-hash mode should not filter to duplicate file sizes; got: %s", fullHashWhere)
+	}
+
+	forceFullHashWhere := buildHashWhereClause(HashOptions{Refresh: true, FullHash: true})
+	if strings.Contains(forceFullHashWhere, "hash IS NULL") || strings.Contains(forceFullHashWhere, "HAVING COUNT(*) > 1") {
+		t.Fatalf("full-hash force mode should select all files; got: %s", forceFullHashWhere)
 	}
 }
 

@@ -56,9 +56,11 @@ The deduplicator tool provides several commands to help you manage duplicate fil
         - `--min-size SIZE`: Minimum file size to consider (e.g., "1M", "1.5G", "500K")
     - `hash`: Calculate and update file hashes in the database
       - Options:
-        - `--force`: Rehash files even if they already have a hash
+        - `--force`: Rehash selected files even if they already have a hash
         - `--renew`: Recalculate hashes older than 1 week
         - `--retry-problematic`: Retry files that previously timed out
+        - `--first-chunk`: Hash only the first 1KiB of files with duplicate sizes
+        - `--full-hash`: Hash full contents for all eligible files
         - `--count N`: Process only N files (0 = unlimited)
     - `import`: Import files from a source directory to a target host
       - Options:
@@ -216,11 +218,20 @@ find . -type f -name "*.jpg" -o -name "*.png" | deduplicator update
 
 ### Calculate File Hashes
 ```bash
-# Hash all files in database
+# Hash un-hashed files whose size appears more than once
 deduplicator files hash
 
-# Force rehash all files
+# Quickly hash only the first 1KiB of un-hashed files whose size appears more than once
+deduplicator files hash --first-chunk
+
+# Hash every un-hashed file, even if its size is unique
+deduplicator files hash --full-hash
+
+# Force rehash files selected by the default duplicate-size filter
 deduplicator files hash --force
+
+# Force rehash every file
+deduplicator files hash --full-hash --force
 
 # Recalculate hashes older than 1 week
 deduplicator files hash --renew

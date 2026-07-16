@@ -53,9 +53,11 @@ func CreateFlagSets(version string) map[string]*flag.FlagSet {
 	// Files hash command flags
 	filesHashCmd := flag.NewFlagSet("files-hash", flag.ContinueOnError)
 	filesHashCmd.Bool("help", false, "Show help for files hash command")
-	filesHashCmd.Bool("force", false, "Rehash files even if they already have a hash")
+	filesHashCmd.Bool("force", false, "Rehash selected files even if they already have a hash")
 	filesHashCmd.Bool("renew", false, "Recalculate hashes older than 1 week")
 	filesHashCmd.Bool("retry-problematic", false, "Retry files that previously timed out")
+	filesHashCmd.Bool("first-chunk", false, "Hash only the first 1KiB of files with duplicate sizes")
+	filesHashCmd.Bool("full-hash", false, "Hash full contents for all eligible files")
 	filesHashCmd.Int("count", 0, "Process only N files (0 = unlimited)")
 	flagSets["files-hash"] = filesHashCmd
 

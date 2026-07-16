@@ -102,7 +102,7 @@ Arguments:
 		Name:        "manage server-list",
 		Description: "List all registered servers",
 		Usage:       "manage server-list",
-		Help: `List all servers registered in the database.`,
+		Help:        `List all servers registered in the database.`,
 		Examples: []string{
 			"deduplicator manage server-list",
 		},
@@ -262,21 +262,26 @@ associated with the current host and stored in the database for deduplication.`,
 	{
 		Name:        "hash",
 		Description: "Calculate and update file hashes in the database (deprecated, use 'files hash' instead)",
-		Usage:       "hash [--force] [--renew] [--retry-problematic] [--count N]",
+		Usage:       "hash [--force] [--renew] [--retry-problematic] [--first-chunk|--full-hash] [--count N]",
 		Help: `Calculate and store file hashes for deduplication.
 
 Options:
-  --force              Rehash files even if they already have a hash
+  --force              Rehash selected files even if they already have a hash
   --renew              Recalculate hashes older than 1 week
   --retry-problematic  Retry files that previously timed out
+  --first-chunk        Hash only the first 1KiB of files with duplicate sizes
+  --full-hash          Hash full contents for all eligible files
   --count N            Process only N files (0 = unlimited)
 
 Note: This command is deprecated. Please use 'files hash' instead.
 
+By default, only files whose size appears more than once on the host are hashed.
 Files are hashed using SHA256 for reliable duplicate detection.`,
 		Examples: []string{
 			"deduplicator hash",
 			"deduplicator hash --force",
+			"deduplicator hash --first-chunk",
+			"deduplicator hash --full-hash --force",
 			"deduplicator hash --retry-problematic",
 			"deduplicator hash --count 1000",
 		},
@@ -353,16 +358,23 @@ Options:
 	{
 		Name:        "files hash",
 		Description: "Calculate and store file hashes for the current host",
-		Usage:       "files hash [--force] [--renew] [--retry-problematic]",
+		Usage:       "files hash [--force] [--renew] [--retry-problematic] [--first-chunk|--full-hash]",
 		Help: `Calculate and store file hashes for deduplication (host is inferred from OS hostname).
 
 Options:
-  --force              Rehash files even if they already have a hash
+  --force              Rehash selected files even if they already have a hash
   --renew              Recalculate hashes older than 1 week
-  --retry-problematic  Retry files that previously timed out`,
+  --retry-problematic  Retry files that previously timed out
+  --first-chunk        Hash only the first 1KiB of files with duplicate sizes
+  --full-hash          Hash full contents for all eligible files
+
+By default, only files whose size appears more than once on the host are hashed.
+Use --full-hash --force to rehash every file for the current host.`,
 		Examples: []string{
 			"deduplicator files hash",
 			"deduplicator files hash --force",
+			"deduplicator files hash --first-chunk",
+			"deduplicator files hash --full-hash --force",
 			"deduplicator files hash --retry-problematic",
 		},
 	},
