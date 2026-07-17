@@ -1,0 +1,317 @@
+:root {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #1d252c;
+  background: #f4f6f5;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.app-shell {
+  min-height: 100vh;
+  padding: 24px;
+}
+
+.topbar {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(300px, 560px);
+  gap: 16px;
+  align-items: end;
+  margin-bottom: 16px;
+}
+
+h1,
+h2 {
+  margin: 0;
+  color: #182026;
+  letter-spacing: 0;
+}
+
+h1 {
+  font-size: 28px;
+  line-height: 1.15;
+}
+
+h2 {
+  font-size: 18px;
+  line-height: 1.2;
+}
+
+.subline {
+  margin-top: 6px;
+  color: #65727d;
+  font-size: 14px;
+}
+
+.search-box {
+  height: 44px;
+  display: grid;
+  grid-template-columns: 24px 1fr 24px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border: 1px solid #b9c4cc;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #596773;
+}
+
+.search-box:focus-within {
+  border-color: #2364aa;
+  box-shadow: 0 0 0 3px rgba(35, 100, 170, 0.14);
+}
+
+.search-box input {
+  width: 100%;
+  border: 0;
+  outline: 0;
+  color: #1d252c;
+  background: transparent;
+}
+
+.message {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  font-size: 14px;
+}
+
+.message.error {
+  border: 1px solid #d99a9a;
+  background: #fff0f0;
+  color: #8a2727;
+}
+
+.message.success {
+  border: 1px solid #89c8a7;
+  background: #eefaf3;
+  color: #1d6a43;
+}
+
+.message.warning {
+  border: 1px solid #d5ba72;
+  background: #fff8e5;
+  color: #735719;
+}
+
+.table-wrap {
+  overflow: auto;
+  border: 1px solid #d2d8dd;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+table {
+  width: 100%;
+  min-width: 920px;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #e1e6e9;
+  text-align: left;
+  vertical-align: top;
+  font-size: 14px;
+}
+
+th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #edf1f2;
+  color: #4a5660;
+  font-weight: 700;
+}
+
+tr:last-child td {
+  border-bottom: 0;
+}
+
+.path-cell {
+  max-width: 540px;
+  color: #182026;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.full-path {
+  max-width: 540px;
+  margin-top: 3px;
+  color: #687680;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.hash {
+  display: block;
+  max-width: 220px;
+  color: #596773;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.action-col {
+  width: 120px;
+  text-align: right;
+}
+
+.icon-button,
+.secondary,
+.solid,
+.close-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 34px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+
+.icon-button {
+  padding: 0 10px;
+  background: #ffffff;
+}
+
+.danger {
+  border-color: #d9a5a5;
+  color: #972b2b;
+}
+
+.danger:hover:not(:disabled) {
+  background: #fff2f2;
+}
+
+.solid {
+  padding: 0 14px;
+}
+
+.solid.danger {
+  background: #b53030;
+  color: #ffffff;
+  border-color: #b53030;
+}
+
+.solid.danger:hover:not(:disabled) {
+  background: #9e2929;
+}
+
+.secondary {
+  padding: 0 14px;
+  border-color: #b9c4cc;
+  background: #ffffff;
+  color: #1d252c;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.empty {
+  height: 180px;
+  color: #65727d;
+  text-align: center;
+  vertical-align: middle;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(18, 26, 32, 0.38);
+}
+
+.modal {
+  width: min(640px, 100%);
+  border-radius: 8px;
+  border: 1px solid #d2d8dd;
+  background: #ffffff;
+  box-shadow: 0 24px 60px rgba(18, 26, 32, 0.24);
+}
+
+.modal-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  padding: 16px 18px;
+  border-bottom: 1px solid #e1e6e9;
+}
+
+.close-button {
+  width: 34px;
+  padding: 0;
+  border-color: #d2d8dd;
+  background: #ffffff;
+  color: #4a5660;
+}
+
+.delete-path {
+  margin: 18px;
+  padding: 12px;
+  border-radius: 6px;
+  background: #f4f6f5;
+  color: #1d252c;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 0 18px 18px;
+}
+
+.spin {
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 760px) {
+  .app-shell {
+    padding: 14px;
+  }
+
+  .topbar {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  h1 {
+    font-size: 24px;
+  }
+
+  .search-box {
+    min-width: 0;
+  }
+}

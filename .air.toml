@@ -1,0 +1,38 @@
+root = "."
+tmp_dir = "tmp"
+
+[build]
+cmd = "go build -o ./tmp/deduplicator ."
+entrypoint = "./tmp/deduplicator"
+args_bin = ["server", "--addr", "0.0.0.0:19111"]
+delay = 1000
+include_ext = ["go", "toml", "ini"]
+include_file = [".env", "config.ini.sample"]
+exclude_dir = ["dist", "tmp", "web", "docs", "scripts", "systemd", "test", ".git", ".cache"]
+exclude_file = []
+exclude_regex = ["_test\\.go"]
+exclude_unchanged = true
+follow_symlink = false
+kill_delay = "500ms"
+log = "air-build.log"
+poll = false
+send_interrupt = true
+stop_on_error = true
+
+[color]
+app = "cyan"
+build = "yellow"
+main = "magenta"
+runner = "green"
+watcher = "blue"
+
+[log]
+main_only = false
+time = true
+
+[misc]
+clean_on_exit = true
+
+[screen]
+clear_on_rebuild = false
+keep_scroll = true

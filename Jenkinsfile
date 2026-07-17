@@ -6,10 +6,15 @@ pipeline {
 
   environment {
     GO_VERSION = "1.24.0"
-    HOSTS_AMD64 = "brain pinky"
+    HOSTS_AMD64 = "brain pinky crash"
     HOSTS_ARM64 = "rpi4"
     PRIMARY_DB_HOST = "brain"
     REMOTE_LOCK_DIR = "/var/lock/deduplicator"
+    FRONTEND_ARCHIVE = "dist/deduplicator-web.tar.gz"
+    RABBITMQ_HOST = "192.168.68.180"
+    RABBITMQ_PORT = "5672"
+    RABBITMQ_USER = "dedupe"
+    RABBITMQ_VHOST = "/crash_vhost"
   }
 
   stages {
@@ -45,7 +50,14 @@ pipeline {
     stage('Build') {
       steps {
         sh '''
+          if ! command -v npm >/dev/null 2>&1; then
+            echo "npm is required on the Jenkins agent to build the Vite frontend."
+            exit 1
+          fi
           mkdir -p dist
+          npm --prefix web ci
+          npm --prefix web run build
+          tar -C web/dist -czf "${FRONTEND_ARCHIVE}" .
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o dist/deduplicator-linux-amd64 .
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o dist/deduplicator-linux-arm64 .
         '''
@@ -71,4 +83,3 @@ pipeline {
     }
   }
 }
-

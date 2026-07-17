@@ -199,6 +199,8 @@ func (a *App) HandleCommand(ctx context.Context, args []string) error {
 		return HandleManage(a.db, args[2:])
 	case "files":
 		return HandleFiles(ctx, a.db, args[2:])
+	case "server":
+		return HandleServer(ctx, a.db, args[2:])
 	default:
 		return fmt.Errorf("unknown command: %s", args[1])
 	}

@@ -88,15 +88,20 @@ The deduplicator tool provides several commands to help you manage duplicate fil
 
 - `problematic`: List problematic files for the current host (timeouts/errors during hashing)
 
+- `server`: Run the local web UI for partial filepath search and explicit deletion
+  - Options:
+    - `--addr ADDR`: HTTP listen address (default `:19111`; use `0.0.0.0:19111` for reverse proxy access)
+    - `--ui-dir DIR`: Built Vite UI directory (default: `web/dist` when present, otherwise `/usr/local/share/deduplicator/web`)
+
 - `listen` / `queue version`: Optional RabbitMQ commands for version update notifications
 
 ## Configuration
 
-Deduplicator reads DB configuration from (highest priority first):
+Deduplicator never overwrites environment variables that already exist. For unset values, it tries configuration files in this order:
 
-1. Existing environment variables (`DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`)
-2. A local `.env` file in the current working directory (optional)
-3. `/etc/dedupe/config.ini` (optional; created by the Jenkins deploy)
+1. `/etc/dedupe/config.ini` (optional; created by the Jenkins deploy)
+2. `~/.config/dedupe/config.ini` (optional)
+3. A local `.env` file in the current working directory (optional)
 
 ### `/etc/dedupe/config.ini`
 
@@ -105,6 +110,7 @@ Example:
 ```ini
 [default]
 # These are optional and can be used even without a [database] section:
+hostname=book16
 deduplicator_lock_dir=/var/lock/deduplicator
 local_migrate_lock_dir=/var/lock/deduplicator
 
@@ -120,11 +126,11 @@ password=pass
 name=dbname
 
 [rabbitmq]
-host=localhost
+host=192.168.68.180
 port=5672
-vhost=/
-user=guest
-password=guest
+vhost=/crash_vhost
+user=dedupe
+password=change-me
 queue=dedup_backup
 
 [logging]
@@ -217,6 +223,26 @@ find /path/to/directory -type f | deduplicator update
 # Add files with specific extensions
 find . -type f -name "*.jpg" -o -name "*.png" | deduplicator update
 ```
+
+### Run the Web UI
+```bash
+# Build the Vite/React UI
+npm --prefix web install
+npm --prefix web run build
+
+# Search and delete indexed files on the current host
+deduplicator server --addr 0.0.0.0:19111 --ui-dir web/dist
+
+# Search from a development machine that is not a registered host
+deduplicator server --addr 0.0.0.0:19111 --host Brain --ui-dir web/dist
+
+# Use a different port
+deduplicator server --addr 0.0.0.0:9090
+```
+
+Delete actions are scoped to the current host and remove the local filesystem file before deleting the matching database row.
+
+For backend hot reload during local development, install Air with `go install github.com/air-verse/air@latest` and run `air`. Air listens on `0.0.0.0:19111`; Vite listens on `0.0.0.0:19110` and proxies `/api` to Go. On a MacBook or other non-indexed dev machine, server mode falls back to read-only search across all indexed hosts; use `DEDUPLICATOR_SERVER_HOST=Brain air` to narrow search to one indexed host.
 
 ### Calculate File Hashes
 ```bash

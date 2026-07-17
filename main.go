@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -23,12 +24,13 @@ import (
 const VERSION = "1.4.3"
 
 const (
-	defaultDotenvPath = ".env"
-	systemConfigPath  = "/etc/dedupe/config.ini"
+	systemConfigPath = "/etc/dedupe/config.ini"
+	dotenvPath       = ".env"
 )
 
 func main() {
-	loadedConfig, err := loadConfigFiles(defaultDotenvPath, systemConfigPath)
+	configFiles := defaultConfigFiles()
+	loadedConfig, err := loadConfigFiles(configFiles...)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading configuration: %v\n", err)
 		os.Exit(1)
@@ -48,7 +50,7 @@ func main() {
 	}
 
 	if shouldRejectMissingConfig(os.Args, loadedConfig) {
-		logging.ErrorLogger.Fatalf("no configuration file found: expected %s or %s", defaultDotenvPath, systemConfigPath)
+		logging.ErrorLogger.Fatalf("no configuration file found: expected one of %s", strings.Join(configFilePaths(configFiles), ", "))
 	}
 
 	// Create context that can be cancelled
@@ -72,22 +74,62 @@ func main() {
 	}
 }
 
-func loadConfigFiles(dotenvPath, iniPath string) (bool, error) {
+type configFileKind int
+
+const (
+	configFileINI configFileKind = iota
+	configFileDotenv
+)
+
+type configFile struct {
+	path string
+	kind configFileKind
+}
+
+func defaultConfigFiles() []configFile {
+	files := []configFile{
+		{path: systemConfigPath, kind: configFileINI},
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		files = append(files, configFile{
+			path: filepath.Join(home, ".config", "dedupe", "config.ini"),
+			kind: configFileINI,
+		})
+	}
+	files = append(files, configFile{path: dotenvPath, kind: configFileDotenv})
+	return files
+}
+
+func configFilePaths(files []configFile) []string {
+	paths := make([]string, 0, len(files))
+	for _, file := range files {
+		paths = append(paths, file.path)
+	}
+	return paths
+}
+
+func loadConfigFiles(files ...configFile) (bool, error) {
 	loaded := false
 
-	if err := loadDotenv(dotenvPath); err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return false, err
+	for _, file := range files {
+		switch file.kind {
+		case configFileINI:
+			iniLoaded, err := loadConfigINI(file.path)
+			if err != nil {
+				return false, err
+			}
+			loaded = loaded || iniLoaded
+		case configFileDotenv:
+			if err := loadDotenv(file.path); err != nil {
+				if !errors.Is(err, os.ErrNotExist) {
+					return false, err
+				}
+			} else {
+				loaded = true
+			}
 		}
-	} else {
-		loaded = true
 	}
-
-	iniLoaded, err := loadConfigINI(iniPath)
-	if err != nil {
-		return false, err
-	}
-	return loaded || iniLoaded, nil
+	return loaded, nil
 }
 
 func loadDotenv(path string) error {
@@ -178,6 +220,7 @@ func loadConfigINI(path string) (bool, error) {
 	cfg := dbCfg{}
 	rmq := rabbitCfg{}
 	logCfg := loggingCfg{}
+	configuredHostname := ""
 	lockDir := ""
 	localMigrateLockDir := ""
 
@@ -235,6 +278,8 @@ func loadConfigINI(path string) (bool, error) {
 				cfg.password = val
 			case "name", "dbname":
 				cfg.name = val
+			case "hostname":
+				configuredHostname = val
 			case "deduplicator_lock_dir":
 				lockDir = val
 			case "local_migrate_lock_dir":
@@ -285,6 +330,9 @@ func loadConfigINI(path string) (bool, error) {
 		os.Setenv("DB_NAME", cfg.name)
 	}
 
+	if os.Getenv("DEDUPLICATOR_HOSTNAME") == "" && configuredHostname != "" {
+		os.Setenv("DEDUPLICATOR_HOSTNAME", configuredHostname)
+	}
 	if os.Getenv("DEDUPLICATOR_LOCK_DIR") == "" && lockDir != "" {
 		os.Setenv("DEDUPLICATOR_LOCK_DIR", lockDir)
 	}

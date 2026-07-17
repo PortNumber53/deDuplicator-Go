@@ -301,6 +301,31 @@ Requires RabbitMQ environment variables to be set.`,
 		},
 	},
 	{
+		Name:        "server",
+		Description: "Run the local web UI for searching and deleting indexed files",
+		Usage:       "server [--addr 0.0.0.0:19111] [--host HOST] [--ui-dir DIR]",
+		Help: `Run an HTTP server with a Vite/React UI for partial-path search and
+explicit deletion of indexed files.
+
+The server is scoped to the current OS hostname by default, or to
+DEDUPLICATOR_HOSTNAME when configured in [default] hostname. Use --host or
+DEDUPLICATOR_SERVER_HOST when running from a development machine whose hostname
+is not registered in the database. If the local hostname is not registered and
+no host is requested, search runs across all hosts in read-only mode. Delete
+actions are enabled only when the served indexed host matches the local hostname.
+
+Options:
+  --addr ADDR       HTTP listen address (default :19111)
+  --host HOST       Friendly host name or hostname to serve
+  --ui-dir DIR      Directory containing the built Vite UI (default: web/dist
+                   when present, otherwise /usr/local/share/deduplicator/web)`,
+		Examples: []string{
+			"deduplicator server",
+			"deduplicator server --host Brain",
+			"deduplicator server --addr 0.0.0.0:19111",
+		},
+	},
+	{
 		Name:        "queue version",
 		Description: "Publish a version update message to notify running instances",
 		Usage:       "queue version [--version VERSION]",

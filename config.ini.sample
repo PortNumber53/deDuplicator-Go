@@ -1,6 +1,11 @@
 [default]
 # Global/default settings (lines before any section are treated as [default])
 #
+# hostname:
+#   Override the local hostname used to match this machine to a row in hosts.
+#   Useful on macOS where os.Hostname() may return a .local name.
+hostname=book16
+#
 # deduplicator_lock_dir:
 #   Override where lock files are stored. Useful if /tmp is not writable/usable.
 #   Default: /tmp/deduplicator
@@ -37,19 +42,19 @@ name=deduplicator
 # Optional RabbitMQ settings (only required for `listen` / `queue version` commands)
 #
 # host: RabbitMQ host
-host=localhost
+host=192.168.68.180
 #
 # port: RabbitMQ port
 port=5672
 #
 # vhost: RabbitMQ vhost
-vhost=/
+vhost=/crash_vhost
 #
 # user: RabbitMQ username
-user=guest
+user=dedupe
 #
 # password: RabbitMQ password
-password=guest
+password=change-me
 #
 # queue: RabbitMQ queue name
 queue=dedup_backup
@@ -62,5 +67,3 @@ log_file=/var/log/dedupe/dedupe.log
 #
 # error_log_file: error log destination
 error_log_file=/var/log/dedupe/error.log
-
-

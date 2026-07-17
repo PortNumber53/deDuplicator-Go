@@ -3,4 +3,9 @@
 *.swo
 .DS_Store
 deduplicator
+air-build.log
+dist/
+tmp/
 .cache/
+web/node_modules/
+web/dist/
