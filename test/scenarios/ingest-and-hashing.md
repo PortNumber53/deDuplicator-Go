@@ -18,15 +18,10 @@ Feature: File ingest and hashing
     When I run `deduplicator files hash`
     Then only rows with NULL hash and a size shared by another file are processed, their SHA256 is stored, and last_hashed_at is updated
 
-  Scenario: Hashing the first chunk for duplicate-size files
-    Given files rows for host "backup1.local" with some NULL hashes and repeated file sizes
-    When I run `deduplicator files hash --first-chunk`
-    Then only rows with NULL hash and a size shared by another file are processed using the first 1KiB
-
   Scenario: Hashing larger files first
     Given files rows for host "backup1.local" with some NULL hashes and repeated file sizes
     When I run `deduplicator files hash --large-first`
-    Then rows with NULL hash and a size shared by another file are processed from largest size to smallest size
+    Then rows with NULL hash and a size shared by another file are processed from largest size to smallest size using full-file SHA256 hashes
 
   Scenario: Prioritizing friendly paths while hashing
     Given host "Backup1" has friendly paths "photos" and "videos" mapped to root folders
@@ -36,18 +31,19 @@ Feature: File ingest and hashing
 
   Scenario: Hashing with compatible combined flags
     Given files rows for host "backup1.local" with some NULL hashes and repeated file sizes
-    When I run `deduplicator files hash --first-chunk --large-first`
-    Then rows with NULL hash and a size shared by another file are processed from largest size to smallest size using the first 1KiB
-
-  Scenario: Rejecting conflicting hash modes
-    Given files rows for host "backup1.local"
-    When I run `deduplicator files hash --first-chunk --full-hash`
-    Then the command fails before hashing because the hash modes conflict
+    When I run `deduplicator files hash --full-hash --large-first`
+    Then all rows with NULL hash are processed from largest size to smallest size using full-file SHA256 hashes
 
   Scenario: Full hashing includes unique-size files
     Given files rows for host "backup1.local" with some NULL hashes
     When I run `deduplicator files hash --full-hash`
     Then every row with NULL hash is processed regardless of file size uniqueness
+
+  Scenario: Upgrading recent hashes to full hashes
+    Given files rows for host "backup1.local" that were hashed in the last 24 hours
+    When I run `deduplicator files hash-upgrade`
+    Then each recent stored hash is compared to a newly calculated full-file SHA256 hash
+    And rows whose stored hash differs are updated to the full-file hash
 
   Scenario: Retrying problematic hashes marks TIMEOUT_ERROR and retries them
     Given a file that timed out and is marked TIMEOUT_ERROR

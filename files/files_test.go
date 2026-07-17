@@ -2,8 +2,6 @@ package files
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -100,49 +98,6 @@ func TestCalculateFileHash(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-func TestCalculateFileFirstChunkHash(t *testing.T) {
-	tempDir := t.TempDir()
-
-	prefix := strings.Repeat("a", int(firstChunkHashBytes))
-	firstPath := filepath.Join(tempDir, "first.bin")
-	secondPath := filepath.Join(tempDir, "second.bin")
-	if err := os.WriteFile(firstPath, []byte(prefix+"first suffix"), 0644); err != nil {
-		t.Fatalf("write first file: %v", err)
-	}
-	if err := os.WriteFile(secondPath, []byte(prefix+"second suffix"), 0644); err != nil {
-		t.Fatalf("write second file: %v", err)
-	}
-
-	firstChunkHash, err := calculateFileFirstChunkHash(firstPath)
-	if err != nil {
-		t.Fatalf("first chunk hash: %v", err)
-	}
-	secondChunkHash, err := calculateFileFirstChunkHash(secondPath)
-	if err != nil {
-		t.Fatalf("second chunk hash: %v", err)
-	}
-	if firstChunkHash != secondChunkHash {
-		t.Fatalf("expected matching first-chunk hashes, got %s and %s", firstChunkHash, secondChunkHash)
-	}
-
-	expected := sha256.Sum256([]byte(prefix))
-	if firstChunkHash != hex.EncodeToString(expected[:]) {
-		t.Fatalf("first-chunk hash = %s, want %s", firstChunkHash, hex.EncodeToString(expected[:]))
-	}
-
-	firstFullHash, err := calculateFileHash(firstPath)
-	if err != nil {
-		t.Fatalf("full hash first file: %v", err)
-	}
-	secondFullHash, err := calculateFileHash(secondPath)
-	if err != nil {
-		t.Fatalf("full hash second file: %v", err)
-	}
-	if firstFullHash == secondFullHash {
-		t.Fatalf("expected full-file hashes to differ")
 	}
 }
 

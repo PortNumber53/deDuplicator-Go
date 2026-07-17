@@ -14,21 +14,8 @@ import (
 	"github.com/schollz/progressbar/v3"
 )
 
-const firstChunkHashBytes int64 = 1024
-
 // calculateFileHash computes the SHA-256 hash of a full file.
 func calculateFileHash(filePath string) (string, error) {
-	return calculateFileHashWithLimit(filePath, 0)
-}
-
-// calculateFileFirstChunkHash computes the SHA-256 hash of the first 1KiB of a file.
-func calculateFileFirstChunkHash(filePath string) (string, error) {
-	return calculateFileHashWithLimit(filePath, firstChunkHashBytes)
-}
-
-// calculateFileHashWithLimit computes the SHA-256 hash of a file, optionally
-// stopping after maxBytes. A maxBytes value of 0 means hash the full file.
-func calculateFileHashWithLimit(filePath string, maxBytes int64) (string, error) {
 	// Create a channel to communicate the result and progress
 	resultCh := make(chan struct {
 		hash string
@@ -69,7 +56,7 @@ func calculateFileHashWithLimit(filePath string, maxBytes int64) (string, error)
 
 	// Run the hashing in a goroutine
 	go func() {
-		hash, err := calculateFileHashInternal(ctx, filePath, progressCh, maxBytes)
+		hash, err := calculateFileHashInternal(ctx, filePath, progressCh)
 		resultCh <- struct {
 			hash string
 			err  error
@@ -86,7 +73,7 @@ func calculateFileHashWithLimit(filePath string, maxBytes int64) (string, error)
 }
 
 // calculateFileHashInternal is the internal implementation of file hashing
-func calculateFileHashInternal(ctx context.Context, filePath string, progressCh chan struct{}, maxBytes int64) (string, error) {
+func calculateFileHashInternal(ctx context.Context, filePath string, progressCh chan struct{}) (string, error) {
 	// Use Lstat instead of Stat to detect symlinks without following them
 	fileInfo, err := os.Lstat(filePath)
 	if err != nil {
@@ -114,13 +101,8 @@ func calculateFileHashInternal(ctx context.Context, filePath string, progressCh 
 	}
 	defer file.Close()
 
-	totalBytes := fileInfo.Size()
-	if maxBytes > 0 && maxBytes < totalBytes {
-		totalBytes = maxBytes
-	}
-
 	// Create a progress bar for this file
-	bar := progressbar.NewOptions64(totalBytes,
+	bar := progressbar.NewOptions64(fileInfo.Size(),
 		progressbar.OptionEnableColorCodes(true),
 		progressbar.OptionShowBytes(true),
 		progressbar.OptionSetWidth(30),
@@ -137,7 +119,6 @@ func calculateFileHashInternal(ctx context.Context, filePath string, progressCh 
 	hash := sha256.New()
 	reader := bufio.NewReader(file)
 	buf := make([]byte, 1024*1024) // 1MB buffer
-	remaining := maxBytes
 
 	for {
 		// Check if context is cancelled before reading
@@ -147,22 +128,12 @@ func calculateFileHashInternal(ctx context.Context, filePath string, progressCh 
 		default:
 		}
 
-		if maxBytes > 0 && remaining <= 0 {
-			break
-		}
-
 		readBuf := buf
-		if maxBytes > 0 && remaining < int64(len(readBuf)) {
-			readBuf = readBuf[:remaining]
-		}
 
 		n, err := reader.Read(readBuf)
 		if n > 0 {
 			hash.Write(buf[:n])
 			bar.Add64(int64(n))
-			if maxBytes > 0 {
-				remaining -= int64(n)
-			}
 
 			// Signal progress was made
 			select {

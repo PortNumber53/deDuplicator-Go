@@ -184,10 +184,6 @@ func resolveHashPriorityRootFolders(host *db.Host, paths []string) ([]string, er
 
 // HashFiles calculates hashes for files in the database
 func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
-	if opts.FirstChunk && opts.FullHash {
-		return fmt.Errorf("--first-chunk and --full-hash cannot be used together")
-	}
-
 	// Get host information by hostname (case-insensitive)
 	host, err := db.GetHostByHostname(sqldb, opts.Server)
 	if err != nil {
@@ -345,12 +341,7 @@ func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
 			logging.InfoLogger.Printf("Hashing file: %s", filepath.Base(dbPath))
 
 			// Calculate hash - this will block until the hash is complete or times out
-			var hash string
-			if opts.FirstChunk {
-				hash, err = calculateFileFirstChunkHash(fullPath)
-			} else {
-				hash, err = calculateFileHash(fullPath)
-			}
+			hash, err := calculateFileHash(fullPath)
 			if err != nil {
 				if strings.Contains(err.Error(), "hashing timed out") || strings.Contains(err.Error(), "hashing operation cancelled") {
 					logging.InfoLogger.Printf("Warning: Timeout while hashing file %s: %v", dbPath, err)

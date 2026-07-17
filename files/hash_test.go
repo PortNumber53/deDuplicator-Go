@@ -111,16 +111,6 @@ func TestHashOptions(t *testing.T) {
 			expectedParam:   "testhost",
 		},
 		{
-			name: "First chunk large first scans unhashed duplicate-size files",
-			options: HashOptions{
-				Server:     "testhost",
-				FirstChunk: true,
-				LargeFirst: true,
-			},
-			expectedCountRe: `(?s)SELECT COUNT\(\*\) FROM files.*WHERE LOWER\(hostname\) = LOWER\(\$1\).*AND hash IS NULL.*AND size IS NOT NULL.*HAVING COUNT\(\*\) > 1`,
-			expectedParam:   "testhost",
-		},
-		{
 			name: "Full hash large first scans all unhashed files",
 			options: HashOptions{
 				Server:     "testhost",
@@ -139,17 +129,6 @@ func TestHashOptions(t *testing.T) {
 				LargeFirst: true,
 			},
 			expectedCountRe: `(?s)SELECT COUNT\(\*\) FROM files.*WHERE LOWER\(hostname\) = LOWER\(\$1\)\s*$`,
-			expectedParam:   "testhost",
-		},
-		{
-			name: "First chunk force large first scans selected duplicate-size files",
-			options: HashOptions{
-				Server:     "testhost",
-				Refresh:    true,
-				FirstChunk: true,
-				LargeFirst: true,
-			},
-			expectedCountRe: `(?s)SELECT COUNT\(\*\) FROM files.*WHERE LOWER\(hostname\) = LOWER\(\$1\).*AND size IS NOT NULL.*HAVING COUNT\(\*\) > 1`,
 			expectedParam:   "testhost",
 		},
 		{
@@ -198,29 +177,6 @@ func TestHashOptions(t *testing.T) {
 				t.Errorf("Unfulfilled expectations: %v", err)
 			}
 		})
-	}
-}
-
-func TestHashFilesRejectsConflictingHashModesBeforeDBAccess(t *testing.T) {
-	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
-	if err != nil {
-		t.Fatalf("Failed to create mock database: %v", err)
-	}
-	defer db.Close()
-
-	err = HashFiles(context.Background(), db, HashOptions{
-		Server:     "testhost",
-		FirstChunk: true,
-		FullHash:   true,
-	})
-	if err == nil {
-		t.Fatal("expected conflicting hash mode error")
-	}
-	if !strings.Contains(err.Error(), "--first-chunk and --full-hash cannot be used together") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("unexpected database access: %v", err)
 	}
 }
 
@@ -372,7 +328,7 @@ func TestResolveHashPriorityRootFoldersRejectsUnknownFriendlyPath(t *testing.T) 
 	}
 }
 
-func TestHashFilesProcessesFirstChunkLargeFirstCombination(t *testing.T) {
+func TestHashFilesProcessesFullHashLargeFirstCombination(t *testing.T) {
 	var logBuffer bytes.Buffer
 	logging.InfoLogger = log.New(&logBuffer, "", 0)
 	logging.ErrorLogger = log.New(io.Discard, "", 0)
@@ -385,7 +341,7 @@ func TestHashFilesProcessesFirstChunkLargeFirstCombination(t *testing.T) {
 	mock.MatchExpectationsInOrder(false)
 
 	root := t.TempDir()
-	prefix := strings.Repeat("x", int(firstChunkHashBytes))
+	prefix := strings.Repeat("x", 2048)
 	firstContent := []byte(prefix + "suffix-0001")
 	secondContent := []byte(prefix + "suffix-0002")
 	if err := os.WriteFile(filepath.Join(root, "first.bin"), firstContent, 0644); err != nil {
@@ -395,8 +351,10 @@ func TestHashFilesProcessesFirstChunkLargeFirstCombination(t *testing.T) {
 		t.Fatalf("write second file: %v", err)
 	}
 
-	expected := sha256.Sum256([]byte(prefix))
-	expectedHash := hex.EncodeToString(expected[:])
+	firstExpected := sha256.Sum256(firstContent)
+	firstExpectedHash := hex.EncodeToString(firstExpected[:])
+	secondExpected := sha256.Sum256(secondContent)
+	secondExpectedHash := hex.EncodeToString(secondExpected[:])
 
 	hostRows := sqlmock.NewRows([]string{"id", "name", "hostname", "ip", "root_path", "settings", "created_at"}).
 		AddRow(1, "Backup1", "backup1.local", "", root, []byte(`{}`), time.Now())
@@ -421,20 +379,19 @@ func TestHashFilesProcessesFirstChunkLargeFirstCombination(t *testing.T) {
 
 	mock.ExpectPrepare(updateRe).
 		ExpectExec().
-		WithArgs(expectedHash, 1).
+		WithArgs(firstExpectedHash, 1).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectPrepare(updateRe).
 		ExpectExec().
-		WithArgs(expectedHash, 2).
+		WithArgs(secondExpectedHash, 2).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	err = HashFiles(context.Background(), db, HashOptions{
 		Server:     "backup1.local",
-		FirstChunk: true,
 		LargeFirst: true,
 	})
 	if err != nil {
-		t.Fatalf("HashFiles first-chunk large-first error: %v", err)
+		t.Fatalf("HashFiles full-hash large-first error: %v", err)
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -523,11 +480,6 @@ func TestHashWhereClauseModeSelection(t *testing.T) {
 	}
 	if !strings.Contains(defaultWhere, "HAVING COUNT(*) > 1") {
 		t.Fatalf("default mode should filter to duplicate file sizes; got: %s", defaultWhere)
-	}
-
-	firstChunkWhere := buildHashWhereClause(HashOptions{FirstChunk: true})
-	if !strings.Contains(firstChunkWhere, "hash IS NULL") || !strings.Contains(firstChunkWhere, "HAVING COUNT(*) > 1") {
-		t.Fatalf("first-chunk mode should select unhashed duplicate-size files; got: %s", firstChunkWhere)
 	}
 
 	fullHashWhere := buildHashWhereClause(HashOptions{FullHash: true})

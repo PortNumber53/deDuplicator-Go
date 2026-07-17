@@ -27,4 +27,12 @@ Feature: Importing and mirroring files
     Given at least two hosts share friendly path "photos" with identical hashes for some files and differing hashes for others
     When I run `deduplicator files mirror photos`
     Then files missing on a host are rsynced from a source host, while hash mismatches or on-disk-but-not-in-DB cases are reported as conflicts
+
+  Scenario: Mirror group copies hashes across different friendly paths
+    Given group "family" contains "Brain:Personal", "PI4:BKP_Media", and "Pinky:Personal"
+    And a full-file hash exists on fewer than all group member paths
+    When I run `deduplicator files mirror-group family`
+    Then the hash is copied to each missing group member path and the desired copy count is inferred from the three group paths
+    And if existing copies use different relative paths, new copies use the relative path that already has the most copies for that hash
+    And ties are resolved by choosing the relative path from the group member with the most indexed files
 ```

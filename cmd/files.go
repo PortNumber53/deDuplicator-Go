@@ -35,7 +35,7 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 			ShowCommandHelp(*cmd)
 			return nil
 		}
-		return fmt.Errorf("files command requires a subcommand: find, list-dupes, move-dupes, hash, prune, or import")
+		return fmt.Errorf("files command requires a subcommand: find, list-dupes, move-dupes, hash, hash-upgrade, prune, import, mirror, mirror-group, or dedupe-group")
 	}
 
 	switch args[0] {
@@ -175,7 +175,6 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 		force := hashCmd.Bool("force", false, "Rehash selected files even if they already have a hash")
 		renew := hashCmd.Bool("renew", false, "Recalculate hashes older than 1 week")
 		retryProblematic := hashCmd.Bool("retry-problematic", false, "Retry files that previously timed out")
-		firstChunk := hashCmd.Bool("first-chunk", false, "Hash only the first 1KiB of files with duplicate sizes")
 		fullHash := hashCmd.Bool("full-hash", false, "Hash full contents for all eligible files")
 		largeFirst := hashCmd.Bool("large-first", false, "Process larger files before smaller files")
 		var priorityPaths repeatedStringFlag
@@ -186,10 +185,6 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 			fmt.Printf("Error: failed to parse hash command flags: %v\n", err)
 			return err
 		}
-		if *firstChunk && *fullHash {
-			return fmt.Errorf("--first-chunk and --full-hash cannot be used together")
-		}
-
 		// Get hostname for current machine
 		hostname, err := os.Hostname()
 		if err != nil {
@@ -222,7 +217,6 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 			Refresh:          *force,
 			Renew:            *renew,
 			RetryProblematic: *retryProblematic,
-			FirstChunk:       *firstChunk,
 			FullHash:         *fullHash,
 			LargeFirst:       *largeFirst,
 			Paths:            []string(priorityPaths),
@@ -237,6 +231,54 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 		}
 		fmt.Println("Hashing completed successfully.")
 		return nil
+
+	case "hash-upgrade":
+		// Check for help flag
+		for _, arg := range args[1:] {
+			if arg == "--help" || arg == "help" {
+				cmd := FindCommand("files hash-upgrade")
+				if cmd != nil {
+					ShowCommandHelp(*cmd)
+					return nil
+				}
+				break
+			}
+		}
+
+		hashUpgradeCmd := flag.NewFlagSet("hash-upgrade", flag.ExitOnError)
+		if err := hashUpgradeCmd.Parse(args[1:]); err != nil {
+			return fmt.Errorf("error parsing hash-upgrade flags: %v", err)
+		}
+		if hashUpgradeCmd.NArg() != 0 {
+			return fmt.Errorf("hash-upgrade does not accept arguments")
+		}
+
+		hostname, err := os.Hostname()
+		if err != nil {
+			fmt.Printf("Error: failed to get hostname: %v\n", err)
+			return err
+		}
+		hostname = strings.ToLower(hostname)
+
+		var hostName string
+		err = database.QueryRow(`
+				SELECT name
+				FROM hosts
+				WHERE LOWER(hostname) = LOWER($1)
+			`, hostname).Scan(&hostName)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				fmt.Printf("Error: no host found for hostname '%s'. Please add it using 'deduplicator manage add'.\n", hostname)
+				return err
+			}
+			fmt.Printf("Error: failed to find host in database: %v\n", err)
+			return err
+		}
+
+		fmt.Printf("Upgrading recent hashes for host: %s\n", hostName)
+		return files.UpgradeRecentHashes(ctx, database, files.HashUpgradeOptions{
+			Server: hostName,
+		})
 
 	case "list-dupes":
 		// Check for help flag
@@ -368,6 +410,34 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 		var friendlyPath string
 		friendlyPath = args[1]
 		return files.MirrorFriendlyPath(ctx, database, friendlyPath)
+
+	case "mirror-group":
+		// Check for help flag
+		for _, arg := range args[1:] {
+			if arg == "--help" || arg == "help" {
+				cmd := FindCommand("files mirror-group")
+				if cmd != nil {
+					ShowCommandHelp(*cmd)
+					return nil
+				}
+				break
+			}
+		}
+
+		if len(args) < 2 {
+			return fmt.Errorf("mirror-group requires a group name argument")
+		}
+
+		mirrorGroupCmd := flag.NewFlagSet(args[0], flag.ExitOnError)
+		dryRun := mirrorGroupCmd.Bool("dry-run", false, "Show what would be mirrored without transferring files")
+		if err := mirrorGroupCmd.Parse(args[2:]); err != nil {
+			return fmt.Errorf("error parsing mirror-group flags: %v", err)
+		}
+
+		return files.MirrorGroup(ctx, database, files.GroupMirrorOptions{
+			GroupName: args[1],
+			DryRun:    *dryRun,
+		})
 
 	case "dedupe-group":
 		// Check for help flag

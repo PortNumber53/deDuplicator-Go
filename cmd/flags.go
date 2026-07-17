@@ -57,13 +57,17 @@ func CreateFlagSets(version string) map[string]*flag.FlagSet {
 	filesHashCmd.Bool("force", false, "Rehash selected files even if they already have a hash")
 	filesHashCmd.Bool("renew", false, "Recalculate hashes older than 1 week")
 	filesHashCmd.Bool("retry-problematic", false, "Retry files that previously timed out")
-	filesHashCmd.Bool("first-chunk", false, "Hash only the first 1KiB of files with duplicate sizes")
 	filesHashCmd.Bool("full-hash", false, "Hash full contents for all eligible files")
 	filesHashCmd.Bool("large-first", false, "Process larger files before smaller files")
 	var hashPriorityPaths repeatedStringFlag
 	filesHashCmd.Var(&hashPriorityPaths, "path", "Friendly path or absolute root folder to process first (can be repeated)")
 	filesHashCmd.Int("count", 0, "Process only N files (0 = unlimited)")
 	flagSets["files-hash"] = filesHashCmd
+
+	// Files hash-upgrade command flags
+	filesHashUpgradeCmd := flag.NewFlagSet("files-hash-upgrade", flag.ContinueOnError)
+	filesHashUpgradeCmd.Bool("help", false, "Show help for files hash-upgrade command")
+	flagSets["files-hash-upgrade"] = filesHashUpgradeCmd
 
 	// Manage command flags
 	manageCmd := flag.NewFlagSet("manage", flag.ContinueOnError)

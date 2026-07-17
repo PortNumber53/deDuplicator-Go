@@ -46,6 +46,16 @@ deduplicator files dedupe-group photos --dry-run
 deduplicator files dedupe-group photos --run
 ```
 
+### 5. Mirror Missing Group Copies
+
+```bash
+# Show missing copies without transferring files
+deduplicator files mirror-group photos --dry-run
+
+# Copy missing hashes to every path in the group
+deduplicator files mirror-group photos
+```
+
 ## Management Commands
 
 ### Create a Group
@@ -101,6 +111,20 @@ Options:
   --min-size <bytes>     Only process files larger than this size
   --count <n>            Limit the number of duplicate groups to process
 ```
+
+## Mirroring Command
+
+```bash
+deduplicator files mirror-group <group_name> [--dry-run]
+```
+
+`mirror-group` treats the number of paths in the group as the desired mirror
+copy count. It uses full-file hash values as the file identity, so different
+relative paths with the same hash are treated as the same file. When it needs
+to create a missing copy and existing copies use different relative paths, it
+chooses the relative path that already has the most copies for that hash. Ties
+are resolved by using the path from the group member with the most indexed
+files, reducing unnecessary folder/path proliferation.
 
 ## How It Works
 

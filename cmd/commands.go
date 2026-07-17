@@ -262,14 +262,13 @@ associated with the current host and stored in the database for deduplication.`,
 	{
 		Name:        "hash",
 		Description: "Calculate and update file hashes in the database (deprecated, use 'files hash' instead)",
-		Usage:       "hash [--force] [--renew] [--retry-problematic] [--first-chunk|--full-hash] [--large-first] [--count N]",
+		Usage:       "hash [--force] [--renew] [--retry-problematic] [--full-hash] [--large-first] [--count N]",
 		Help: `Calculate and store file hashes for deduplication.
 
 Options:
   --force              Rehash selected files even if they already have a hash
   --renew              Recalculate hashes older than 1 week
   --retry-problematic  Retry files that previously timed out
-  --first-chunk        Hash only the first 1KiB of files with duplicate sizes
   --full-hash          Hash full contents for all eligible files
   --large-first        Process larger files before smaller files
   --count N            Process only N files (0 = unlimited)
@@ -281,7 +280,6 @@ Files are hashed using SHA256 for reliable duplicate detection.`,
 		Examples: []string{
 			"deduplicator hash",
 			"deduplicator hash --force",
-			"deduplicator hash --first-chunk",
 			"deduplicator hash --full-hash --force",
 			"deduplicator hash --large-first",
 			"deduplicator hash --retry-problematic",
@@ -315,7 +313,7 @@ Requires RabbitMQ environment variables to be set.`,
 	{
 		Name:        "files",
 		Description: "Manage file operations (find, hashing, duplicate detection, pruning)",
-		Usage:       "files [find|list-dupes|move-dupes|hash|prune|import|mirror|dedupe-group] [options]",
+		Usage:       "files [find|list-dupes|move-dupes|hash|hash-upgrade|prune|import|mirror|mirror-group|dedupe-group] [options]",
 		Help: `Manage file operations including finding, hashing, and duplicate detection.
 
 Subcommands:
@@ -323,9 +321,11 @@ Subcommands:
   list-dupes  - List duplicate files
   move-dupes  - Move duplicate files to a destination
   hash        - Calculate and store file hashes
+  hash-upgrade - Temporarily upgrade recent hashes to full-file hashes
   prune       - Remove entries for files that no longer exist
   import      - Import files from another location
   mirror      - Mirror a friendly path (implementation-specific)
+  mirror-group - Mirror missing hashes across every path in a path group
   dedupe-group - Balance/limit duplicates across a path group
 
 Use 'files <subcommand> --help' for more information on a specific subcommand.`,
@@ -336,9 +336,11 @@ Use 'files <subcommand> --help' for more information on a specific subcommand.`,
 			"deduplicator files move-dupes --target /backup/dupes",
 			"deduplicator files move-dupes --target /backup/dupes --dry-run",
 			"deduplicator files hash --force",
+			"deduplicator files hash-upgrade",
 			"deduplicator files prune",
 			"deduplicator files import --source /path/to/files --server myhost --path Photos",
 			"deduplicator files mirror Photos",
+			"deduplicator files mirror-group photos",
 			"deduplicator files dedupe-group photos --dry-run",
 		},
 	},
@@ -360,14 +362,13 @@ Options:
 	{
 		Name:        "files hash",
 		Description: "Calculate and store file hashes for the current host",
-		Usage:       "files hash [--force] [--renew] [--retry-problematic] [--first-chunk|--full-hash] [--large-first] [--path PATH]",
+		Usage:       "files hash [--force] [--renew] [--retry-problematic] [--full-hash] [--large-first] [--path PATH]",
 		Help: `Calculate and store file hashes for deduplication (host is inferred from OS hostname).
 
 Options:
   --force              Rehash selected files even if they already have a hash
   --renew              Recalculate hashes older than 1 week
   --retry-problematic  Retry files that previously timed out
-  --first-chunk        Hash only the first 1KiB of files with duplicate sizes
   --full-hash          Hash full contents for all eligible files
   --large-first        Process larger files before smaller files
   --path PATH          Friendly path or absolute root folder to process first (repeatable)
@@ -377,11 +378,24 @@ Use --full-hash --force to rehash every file for the current host.`,
 		Examples: []string{
 			"deduplicator files hash",
 			"deduplicator files hash --force",
-			"deduplicator files hash --first-chunk",
 			"deduplicator files hash --full-hash --force",
 			"deduplicator files hash --large-first",
 			"deduplicator files hash --path Photos --path Videos",
 			"deduplicator files hash --retry-problematic",
+		},
+	},
+	{
+		Name:        "files hash-upgrade",
+		Description: "Temporarily upgrade recent hashes to full-file hashes",
+		Usage:       "files hash-upgrade",
+		Help: `Recalculate full-file SHA256 hashes for files on the current host that were
+hashed in the last 24 hours.
+
+This temporary maintenance command compares the newly calculated full hash with
+the stored hash and updates rows whose stored hash differs. It skips NULL hashes,
+TIMEOUT_ERROR, and HASH_ERROR rows.`,
+		Examples: []string{
+			"deduplicator files hash-upgrade",
 		},
 	},
 	{
@@ -476,6 +490,25 @@ Note: The original directory structure is preserved under the per-host target fo
 		Help:        `Mirror a friendly path. This is an advanced command and may depend on your deployment setup.`,
 		Examples: []string{
 			"deduplicator files mirror Photos",
+		},
+	},
+	{
+		Name:        "files mirror-group",
+		Description: "Mirror missing hashes across every path in a path group",
+		Usage:       "files mirror-group <group name> [--dry-run]",
+		Help: `Mirror a path group by hash.
+
+The desired copy count is inferred from the number of paths in the group.
+For each hash, one copy is kept or created on every group member path. When
+existing copies use different relative paths, new copies use the relative path
+that already has the most copies for that hash, with the most populated group
+member used as the tie breaker.
+
+Options:
+  --dry-run  Show missing copies without transferring files`,
+		Examples: []string{
+			"deduplicator files mirror-group family --dry-run",
+			"deduplicator files mirror-group family",
 		},
 	},
 	{
