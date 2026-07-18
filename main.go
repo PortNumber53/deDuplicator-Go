@@ -21,7 +21,7 @@ import (
 )
 
 // VERSION represents the current version of the deduplicator tool
-const VERSION = "1.4.3"
+const VERSION = "1.4.4"
 
 const (
 	systemConfigPath = "/etc/dedupe/config.ini"

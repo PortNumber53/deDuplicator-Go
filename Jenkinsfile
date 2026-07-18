@@ -47,6 +47,15 @@ pipeline {
       }
     }
 
+    stage('Check Version') {
+      steps {
+        sh '''
+          set -e
+          bash scripts/check-version-bump.sh
+        '''
+      }
+    }
+
     stage('Build') {
       steps {
         sh '''

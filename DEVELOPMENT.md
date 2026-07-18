@@ -1,5 +1,11 @@
 ## Local Development
 
+### Versioning
+
+Every pushed/deployed change must increase `VERSION` in `main.go`.
+Jenkins runs `scripts/check-version-bump.sh` and fails the build if the current
+version is not greater than the previous build/commit version.
+
 ### Backend Hot Reload
 
 Install Air once:

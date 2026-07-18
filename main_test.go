@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -23,6 +24,13 @@ func preserveEnv(t *testing.T, keys ...string) {
 			}
 		}
 	})
+}
+
+func TestVersionIsSemanticVersion(t *testing.T) {
+	re := regexp.MustCompile(`^\d+\.\d+\.\d+$`)
+	if !re.MatchString(VERSION) {
+		t.Fatalf("VERSION=%q must use MAJOR.MINOR.PATCH", VERSION)
+	}
 }
 
 func TestLoadConfigINISupportsDefaultSectionAndNoSection(t *testing.T) {
