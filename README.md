@@ -63,7 +63,7 @@ The deduplicator tool provides several commands to help you manage duplicate fil
         - `--large-first`: Process larger files before smaller files
         - `--path PATH`: Friendly path or absolute root folder to process first (repeatable)
         - `--count N`: Process only N files (0 = unlimited)
-    - `hash-upgrade`: Temporarily recalculate full hashes for files hashed in the last 24 hours
+    - `hash-upgrade`: Temporarily recalculate full hashes for files with stored hashes
     - `import`: Import files from a source directory to a target host
       - Options:
         - `--source DIR`: Source directory to import files from (required)
@@ -264,7 +264,7 @@ deduplicator files hash --force
 # Force rehash every file
 deduplicator files hash --full-hash --force
 
-# Temporarily upgrade recent hashes to full-file hashes
+# Temporarily upgrade stored hashes to full-file hashes
 deduplicator files hash-upgrade
 
 # Recalculate hashes older than 1 week

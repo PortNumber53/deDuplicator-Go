@@ -13,7 +13,7 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
-func TestUpgradeRecentHashesUpdatesOnlyChangedHashes(t *testing.T) {
+func TestUpgradeStoredHashesUpdatesOnlyChangedHashes(t *testing.T) {
 	database, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
 	if err != nil {
 		t.Fatalf("sqlmock: %v", err)
@@ -44,7 +44,7 @@ func TestUpgradeRecentHashesUpdatesOnlyChangedHashes(t *testing.T) {
 		WithArgs("backup1.local").
 		WillReturnRows(hostRows)
 
-	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\) FROM files\s+WHERE LOWER\(hostname\) = LOWER\(\$1\).*AND hash IS NOT NULL.*AND hash NOT IN \('TIMEOUT_ERROR', 'HASH_ERROR'\).*AND last_hashed_at >= NOW\(\) - INTERVAL '24 hours'`).
+	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\) FROM files\s+WHERE LOWER\(hostname\) = LOWER\(\$1\).*AND hash IS NOT NULL.*AND hash NOT IN \('TIMEOUT_ERROR', 'HASH_ERROR'\)`).
 		WithArgs("backup1.local").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
 
@@ -56,12 +56,12 @@ func TestUpgradeRecentHashesUpdatesOnlyChangedHashes(t *testing.T) {
 	fileRows := sqlmock.NewRows([]string{"id", "path", "root_folder", "hash"}).
 		AddRow(1, "changed.bin", root, partialHash).
 		AddRow(2, "same.bin", root, sameFullHash)
-	mock.ExpectQuery(`(?s)SELECT id, path, root_folder, hash\s+FROM files\s+WHERE LOWER\(hostname\) = LOWER\(\$1\).*AND last_hashed_at >= NOW\(\) - INTERVAL '24 hours'.*AND id > \$2\s+ORDER BY id ASC\s+LIMIT 100`).
+	mock.ExpectQuery(`(?s)SELECT id, path, root_folder, hash\s+FROM files\s+WHERE LOWER\(hostname\) = LOWER\(\$1\).*AND hash IS NOT NULL.*AND hash NOT IN \('TIMEOUT_ERROR', 'HASH_ERROR'\).*AND id > \$2\s+ORDER BY id ASC\s+LIMIT 100`).
 		WithArgs("backup1.local", 0).
 		WillReturnRows(fileRows)
 
-	if err := UpgradeRecentHashes(context.Background(), database, HashUpgradeOptions{Server: "backup1.local"}); err != nil {
-		t.Fatalf("UpgradeRecentHashes error: %v", err)
+	if err := UpgradeStoredHashes(context.Background(), database, HashUpgradeOptions{Server: "backup1.local"}); err != nil {
+		t.Fatalf("UpgradeStoredHashes error: %v", err)
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {

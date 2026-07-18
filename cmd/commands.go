@@ -346,7 +346,7 @@ Subcommands:
   list-dupes  - List duplicate files
   move-dupes  - Move duplicate files to a destination
   hash        - Calculate and store file hashes
-  hash-upgrade - Temporarily upgrade recent hashes to full-file hashes
+	  hash-upgrade - Temporarily upgrade stored hashes to full-file hashes
   prune       - Remove entries for files that no longer exist
   import      - Import files from another location
   mirror      - Mirror a friendly path (implementation-specific)
@@ -411,10 +411,10 @@ Use --full-hash --force to rehash every file for the current host.`,
 	},
 	{
 		Name:        "files hash-upgrade",
-		Description: "Temporarily upgrade recent hashes to full-file hashes",
+		Description: "Temporarily upgrade stored hashes to full-file hashes",
 		Usage:       "files hash-upgrade",
-		Help: `Recalculate full-file SHA256 hashes for files on the current host that were
-hashed in the last 24 hours.
+		Help: `Recalculate full-file SHA256 hashes for files on the current host with
+stored hashes.
 
 This temporary maintenance command compares the newly calculated full hash with
 the stored hash and updates rows whose stored hash differs. It skips NULL hashes,

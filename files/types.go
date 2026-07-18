@@ -55,7 +55,7 @@ type HashOptions struct {
 	Paths            []string // friendly path names or absolute root folders to process first
 }
 
-// HashUpgradeOptions represents options for upgrading recent hashes to full-file hashes.
+// HashUpgradeOptions represents options for upgrading stored hashes to full-file hashes.
 type HashUpgradeOptions struct {
 	Server string
 }

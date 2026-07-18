@@ -13,8 +13,8 @@ import (
 
 const hashUpgradeBatchSize = 100
 
-// UpgradeRecentHashes recalculates full-file hashes for files hashed in the last 24 hours.
-func UpgradeRecentHashes(ctx context.Context, sqldb *sql.DB, opts HashUpgradeOptions) error {
+// UpgradeStoredHashes recalculates full-file hashes for files with existing stored hashes.
+func UpgradeStoredHashes(ctx context.Context, sqldb *sql.DB, opts HashUpgradeOptions) error {
 	host, err := db.GetHostByHostname(sqldb, opts.Server)
 	if err != nil {
 		host, err = db.GetHost(sqldb, opts.Server)
@@ -25,18 +25,17 @@ func UpgradeRecentHashes(ctx context.Context, sqldb *sql.DB, opts HashUpgradeOpt
 	hostname := host.Hostname
 
 	whereClause := `
-		WHERE LOWER(hostname) = LOWER($1)
-		AND hash IS NOT NULL
-		AND hash NOT IN ('TIMEOUT_ERROR', 'HASH_ERROR')
-		AND last_hashed_at >= NOW() - INTERVAL '24 hours'
-	`
+			WHERE LOWER(hostname) = LOWER($1)
+			AND hash IS NOT NULL
+			AND hash NOT IN ('TIMEOUT_ERROR', 'HASH_ERROR')
+		`
 
 	var total int64
 	if err := sqldb.QueryRowContext(ctx, "SELECT COUNT(*) FROM files "+whereClause, hostname).Scan(&total); err != nil {
-		return fmt.Errorf("error counting recent hashes: %v", err)
+		return fmt.Errorf("error counting stored hashes: %v", err)
 	}
 	if total == 0 {
-		fmt.Println("No recent hashes found for upgrade.")
+		fmt.Println("No stored hashes found for upgrade.")
 		return nil
 	}
 
@@ -54,13 +53,13 @@ func UpgradeRecentHashes(ctx context.Context, sqldb *sql.DB, opts HashUpgradeOpt
 	for {
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("operation cancelled after checking %d of %d recent hashes", checked, total)
+			return fmt.Errorf("operation cancelled after checking %d of %d stored hashes", checked, total)
 		default:
 		}
 
 		rows, err := sqldb.QueryContext(ctx, query, hostname, lastID)
 		if err != nil {
-			return fmt.Errorf("error querying recent hashes: %v", err)
+			return fmt.Errorf("error querying stored hashes: %v", err)
 		}
 
 		batchCount := 0
@@ -71,7 +70,7 @@ func UpgradeRecentHashes(ctx context.Context, sqldb *sql.DB, opts HashUpgradeOpt
 			var storedHash string
 			if err := rows.Scan(&id, &dbPath, &rootFolder, &storedHash); err != nil {
 				rows.Close()
-				return fmt.Errorf("error scanning recent hash row: %v", err)
+				return fmt.Errorf("error scanning stored hash row: %v", err)
 			}
 
 			lastID = id
@@ -109,13 +108,13 @@ func UpgradeRecentHashes(ctx context.Context, sqldb *sql.DB, opts HashUpgradeOpt
 		rows.Close()
 
 		if err := rows.Err(); err != nil {
-			return fmt.Errorf("error iterating recent hashes: %v", err)
+			return fmt.Errorf("error iterating stored hashes: %v", err)
 		}
 		if batchCount < hashUpgradeBatchSize {
 			break
 		}
 	}
 
-	fmt.Printf("Hash upgrade completed: checked %d recent hashes, upgraded %d, unchanged %d, failed %d\n", checked, upgraded, unchanged, failed)
+	fmt.Printf("Hash upgrade completed: checked %d stored hashes, upgraded %d, unchanged %d, failed %d\n", checked, upgraded, unchanged, failed)
 	return nil
 }

@@ -275,8 +275,8 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 			return err
 		}
 
-		fmt.Printf("Upgrading recent hashes for host: %s\n", hostName)
-		return files.UpgradeRecentHashes(ctx, database, files.HashUpgradeOptions{
+		fmt.Printf("Upgrading stored hashes for host: %s\n", hostName)
+		return files.UpgradeStoredHashes(ctx, database, files.HashUpgradeOptions{
 			Server: hostName,
 		})
 

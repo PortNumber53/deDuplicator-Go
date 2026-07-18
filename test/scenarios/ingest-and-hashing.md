@@ -39,10 +39,10 @@ Feature: File ingest and hashing
     When I run `deduplicator files hash --full-hash`
     Then every row with NULL hash is processed regardless of file size uniqueness
 
-  Scenario: Upgrading recent hashes to full hashes
-    Given files rows for host "backup1.local" that were hashed in the last 24 hours
+  Scenario: Upgrading stored hashes to full hashes
+    Given files rows for host "backup1.local" with stored non-error hashes
     When I run `deduplicator files hash-upgrade`
-    Then each recent stored hash is compared to a newly calculated full-file SHA256 hash
+    Then each stored hash is compared to a newly calculated full-file SHA256 hash
     And rows whose stored hash differs are updated to the full-file hash
 
   Scenario: Retrying problematic hashes marks TIMEOUT_ERROR and retries them
