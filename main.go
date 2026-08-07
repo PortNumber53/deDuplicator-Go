@@ -24,7 +24,7 @@ import (
 const VERSION = "1.4.4"
 
 const (
-	systemConfigPath = "/etc/dedupe/config.ini"
+	systemConfigPath = "/etc/deDuplicator-Go/config.ini"
 	dotenvPath       = ".env"
 )
 
@@ -92,7 +92,7 @@ func defaultConfigFiles() []configFile {
 	}
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		files = append(files, configFile{
-			path: filepath.Join(home, ".config", "dedupe", "config.ini"),
+			path: filepath.Join(home, ".config", "deDuplicator-Go", "config.ini"),
 			kind: configFileINI,
 		})
 	}
