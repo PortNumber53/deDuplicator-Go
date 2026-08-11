@@ -21,7 +21,7 @@ import (
 )
 
 // VERSION represents the current version of the deduplicator tool
-const VERSION = "1.4.8"
+const VERSION = "1.4.9"
 
 const (
 	systemConfigPath = "/etc/deDuplicator-Go/config.ini"

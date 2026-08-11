@@ -1,13 +1,45 @@
 package files
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"deduplicator/db"
 )
+
+func TestGroupDedupeVerboseOutputIsOptIn(t *testing.T) {
+	capture := func(opts GroupDedupeOptions) string {
+		original := os.Stdout
+		reader, writer, err := os.Pipe()
+		if err != nil {
+			t.Fatalf("os.Pipe: %v", err)
+		}
+		os.Stdout = writer
+		groupDedupeVerbosef(opts, "Executing duplicate candidate query across %d member paths", 3)
+		_ = writer.Close()
+		os.Stdout = original
+		defer reader.Close()
+
+		var output bytes.Buffer
+		if _, err := io.Copy(&output, reader); err != nil {
+			t.Fatalf("read captured output: %v", err)
+		}
+		return output.String()
+	}
+
+	if output := capture(GroupDedupeOptions{}); output != "" {
+		t.Fatalf("non-verbose output = %q, want empty", output)
+	}
+	output := capture(GroupDedupeOptions{Verbose: true})
+	if !strings.Contains(output, "VERBOSE: Executing duplicate candidate query across 3 member paths") {
+		t.Fatalf("verbose output = %q", output)
+	}
+}
 
 func TestEffectiveGroupCopyLimitsDefaultsToMemberCount(t *testing.T) {
 	configuredMax := 3

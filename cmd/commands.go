@@ -539,7 +539,7 @@ Options:
 	{
 		Name:        "files dedupe-group",
 		Description: "Balance/limit duplicates across a path group",
-		Usage:       "files dedupe-group <group name> [--balance-mode MODE] [--respect-limits] [--dry-run|--run] [--min-size BYTES] [--count N]",
+		Usage:       "files dedupe-group <group name> [--balance-mode MODE] [--respect-limits] [--dry-run|--run] [--min-size BYTES] [--count N] [--verbose]",
 		Help: `Deduplicate files across all hosts/paths in a path group.
 
 Options:
@@ -548,7 +548,8 @@ Options:
   --dry-run              Show what would be done without making changes (default)
   --run                  Actually perform the deduplication
   --min-size <size>      Only process files larger than this size (for example, 10G)
-  --count <n>            Limit the number of duplicate groups to process`,
+  --count <n>            Limit the number of duplicate groups to process
+  --verbose              Show member, query, and candidate processing details`,
 		Examples: []string{
 			"deduplicator files dedupe-group photos --dry-run",
 			"deduplicator files dedupe-group photos --respect-limits --run",

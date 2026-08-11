@@ -110,6 +110,7 @@ Options:
   --run                  Actually perform the deduplication
   --min-size <bytes>     Only process files larger than this size
   --count <n>            Limit the number of duplicate groups to process
+  --verbose              Show member, query, and candidate processing details
 ```
 
 By default, `dedupe-group` sets `min_copies` to the number of member paths in
@@ -117,6 +118,11 @@ the group. It removes copies above that count but does not create missing
 copies; use `mirror-group` to populate every member path. Use
 `--respect-limits` to apply the stored `min_copies` and `max_copies` values
 instead.
+
+Verbose mode reports each member path as it is resolved, when the duplicate
+candidate and location queries begin, how long they take, and how many rows are
+selected for processing. This is useful for long-running searches on large
+file indexes.
 
 ## Mirroring Command
 

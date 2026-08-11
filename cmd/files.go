@@ -450,6 +450,7 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 				fmt.Println("  --dry-run              Show what would be done without making changes")
 				fmt.Println("  --min-size <size>      Only process files larger than this size (for example, 10G)")
 				fmt.Println("  --count <n>            Limit the number of duplicate groups to process")
+				fmt.Println("  --verbose              Show member, query, and candidate processing details")
 				fmt.Println("  --run                  Actually perform the deduplication (opposite of dry-run)")
 				return nil
 			}
@@ -459,50 +460,9 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 			return fmt.Errorf("dedupe-group requires a group name argument")
 		}
 
-		groupName := args[1]
-		balanceMode := "priority"
-		respectLimits := false
-		dryRun := true
-		minSize := int64(0)
-		count := 0
-
-		for i := 2; i < len(args); i++ {
-			switch args[i] {
-			case "--balance-mode":
-				if i+1 < len(args) {
-					balanceMode = args[i+1]
-					i++
-				}
-			case "--respect-limits":
-				respectLimits = true
-			case "--dry-run":
-				dryRun = true
-			case "--run":
-				dryRun = false
-			case "--min-size":
-				if i+1 < len(args) {
-					parsed, err := files.ParseSize(args[i+1])
-					if err != nil {
-						return fmt.Errorf("error parsing min-size: %v", err)
-					}
-					minSize = parsed
-					i++
-				}
-			case "--count":
-				if i+1 < len(args) {
-					fmt.Sscanf(args[i+1], "%d", &count)
-					i++
-				}
-			}
-		}
-
-		opts := files.GroupDedupeOptions{
-			GroupName:     groupName,
-			BalanceMode:   balanceMode,
-			RespectLimits: respectLimits,
-			DryRun:        dryRun,
-			MinSize:       minSize,
-			Count:         count,
+		opts, err := parseGroupDedupeOptions(args[1], args[2:])
+		if err != nil {
+			return err
 		}
 
 		return files.DeduplicateByGroup(ctx, database, opts)
@@ -510,4 +470,46 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 	default:
 		return fmt.Errorf("unknown files subcommand: %s", args[0])
 	}
+}
+
+func parseGroupDedupeOptions(groupName string, args []string) (files.GroupDedupeOptions, error) {
+	opts := files.GroupDedupeOptions{
+		GroupName:   groupName,
+		BalanceMode: "priority",
+		DryRun:      true,
+	}
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--balance-mode":
+			if i+1 < len(args) {
+				opts.BalanceMode = args[i+1]
+				i++
+			}
+		case "--respect-limits":
+			opts.RespectLimits = true
+		case "--dry-run":
+			opts.DryRun = true
+		case "--run":
+			opts.DryRun = false
+		case "--verbose", "-v":
+			opts.Verbose = true
+		case "--min-size":
+			if i+1 < len(args) {
+				parsed, err := files.ParseSize(args[i+1])
+				if err != nil {
+					return files.GroupDedupeOptions{}, fmt.Errorf("error parsing min-size: %v", err)
+				}
+				opts.MinSize = parsed
+				i++
+			}
+		case "--count":
+			if i+1 < len(args) {
+				fmt.Sscanf(args[i+1], "%d", &opts.Count)
+				i++
+			}
+		}
+	}
+
+	return opts, nil
 }

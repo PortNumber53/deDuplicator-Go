@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // GroupDedupeOptions extends DedupeOptions with group-aware settings
@@ -22,6 +23,7 @@ type GroupDedupeOptions struct {
 	DryRun        bool   // If true, only show what would be done
 	MinSize       int64  // Minimum file size to consider
 	Count         int    // Limit the number of duplicate groups to process
+	Verbose       bool   // Show detailed progress for group resolution and queries
 }
 
 // FileLocation represents a file's location with metadata
@@ -65,6 +67,14 @@ func DeduplicateByGroup(ctx context.Context, database *sql.DB, opts GroupDedupeO
 	fmt.Printf("Processing path group '%s' (min_copies=%d, max_copies=%s)\n",
 		effectiveGroup.Name, effectiveGroup.MinCopies, formatMaxCopies(effectiveGroup.MaxCopies))
 	fmt.Printf("Group members: %d paths across hosts\n\n", len(members))
+	groupDedupeVerbosef(opts, "Stored limits: min_copies=%d, max_copies=%s; respect_limits=%t",
+		group.MinCopies, formatMaxCopies(group.MaxCopies), opts.RespectLimits)
+	groupDedupeVerbosef(opts, "Mode=%s, balance_mode=%s, min_size=%s bytes, count_limit=%s",
+		groupDedupeMode(opts), opts.BalanceMode, formatBytes(opts.MinSize), formatGroupDedupeCountLimit(opts.Count))
+	for i, member := range members {
+		groupDedupeVerbosef(opts, "Member %d/%d: %s:%s (priority=%d)",
+			i+1, len(members), member.HostName, member.FriendlyPath, member.Priority)
+	}
 
 	// Find duplicates across all hosts in the group
 	duplicates, err := findGroupDuplicates(ctx, database, members, opts)
@@ -119,6 +129,26 @@ func effectiveGroupCopyLimits(group *db.PathGroup, memberCount int, respectLimit
 	return &effective
 }
 
+func groupDedupeVerbosef(opts GroupDedupeOptions, format string, args ...interface{}) {
+	if opts.Verbose {
+		fmt.Printf("VERBOSE: "+format+"\n", args...)
+	}
+}
+
+func groupDedupeMode(opts GroupDedupeOptions) string {
+	if opts.DryRun {
+		return "dry-run"
+	}
+	return "run"
+}
+
+func formatGroupDedupeCountLimit(count int) string {
+	if count <= 0 {
+		return "unlimited"
+	}
+	return fmt.Sprintf("%d", count)
+}
+
 // findGroupDuplicates finds all duplicate files across hosts in a path group
 func findGroupDuplicates(ctx context.Context, database *sql.DB, members []db.PathGroupMember, opts GroupDedupeOptions) ([][]FileLocation, error) {
 	// Build query to find files across all group members
@@ -138,6 +168,8 @@ func findGroupDuplicates(ctx context.Context, database *sql.DB, members []db.Pat
 
 	// Add conditions for each group member
 	for i, member := range members {
+		groupDedupeVerbosef(opts, "Resolving member path %d/%d: %s:%s",
+			i+1, len(members), member.HostName, member.FriendlyPath)
 		if i > 0 {
 			query += " OR "
 		}
@@ -158,6 +190,7 @@ func findGroupDuplicates(ctx context.Context, database *sql.DB, members []db.Pat
 		if !ok {
 			return nil, fmt.Errorf("friendly path '%s' not found on host '%s'", member.FriendlyPath, member.HostName)
 		}
+		groupDedupeVerbosef(opts, "Resolved %s:%s to %s", member.HostName, member.FriendlyPath, absPath)
 
 		argCount++
 		query += fmt.Sprintf(" AND f.root_folder = $%d)", argCount)
@@ -187,6 +220,8 @@ func findGroupDuplicates(ctx context.Context, database *sql.DB, members []db.Pat
 		args = append(args, opts.Count)
 	}
 
+	groupDedupeVerbosef(opts, "Executing duplicate candidate query across %d member paths", len(members))
+	queryStarted := time.Now()
 	rows, err := database.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("error querying duplicates: %v", err)
@@ -212,14 +247,20 @@ func findGroupDuplicates(ctx context.Context, database *sql.DB, members []db.Pat
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	groupDedupeVerbosef(opts, "Duplicate candidate query completed in %s: %d candidate groups",
+		time.Since(queryStarted).Round(time.Millisecond), len(duplicates))
 
 	// Now get all file locations for each duplicate hash/size pair.
 	var result [][]FileLocation
-	for _, duplicate := range duplicates {
-		locations, err := getFileLocationsForHash(ctx, database, duplicate.hash, duplicate.size, members)
+	for i, duplicate := range duplicates {
+		groupDedupeVerbosef(opts, "Loading locations for candidate %d/%d: hash=%s size=%s bytes",
+			i+1, len(duplicates), duplicate.hash, formatBytes(duplicate.size))
+		locations, err := getFileLocationsForHash(ctx, database, duplicate.hash, duplicate.size, members, opts)
 		if err != nil {
 			return nil, err
 		}
+		groupDedupeVerbosef(opts, "Candidate %d/%d has %d matching locations in the group",
+			i+1, len(duplicates), len(locations))
 		if len(locations) > 1 {
 			result = append(result, locations)
 		}
@@ -229,17 +270,23 @@ func findGroupDuplicates(ctx context.Context, database *sql.DB, members []db.Pat
 }
 
 // getFileLocationsForHash gets all file locations for a specific hash and size within the group.
-func getFileLocationsForHash(ctx context.Context, database *sql.DB, hash string, size int64, members []db.PathGroupMember) ([]FileLocation, error) {
+func getFileLocationsForHash(ctx context.Context, database *sql.DB, hash string, size int64, members []db.PathGroupMember, opts GroupDedupeOptions) ([]FileLocation, error) {
 	// Create a map of host+path to priority
 	priorityMap := make(map[string]int)
 	friendlyPathMap := make(map[string]string)
-	for _, member := range members {
+	for i, member := range members {
+		groupDedupeVerbosef(opts, "Preparing location scope %d/%d: %s:%s",
+			i+1, len(members), member.HostName, member.FriendlyPath)
 		host, err := db.GetHost(database, member.HostName)
 		if err != nil {
+			groupDedupeVerbosef(opts, "Skipping location scope %s:%s: host lookup failed: %v",
+				member.HostName, member.FriendlyPath, err)
 			continue
 		}
 		paths, err := host.GetPaths()
 		if err != nil {
+			groupDedupeVerbosef(opts, "Skipping location scope %s:%s: invalid host paths: %v",
+				member.HostName, member.FriendlyPath, err)
 			continue
 		}
 		absPath, ok := paths[member.FriendlyPath]
@@ -247,6 +294,11 @@ func getFileLocationsForHash(ctx context.Context, database *sql.DB, hash string,
 			key := fmt.Sprintf("%s:%s", member.HostName, absPath)
 			priorityMap[key] = member.Priority
 			friendlyPathMap[key] = member.FriendlyPath
+			groupDedupeVerbosef(opts, "Location scope %s:%s uses %s",
+				member.HostName, member.FriendlyPath, absPath)
+		} else {
+			groupDedupeVerbosef(opts, "Skipping location scope %s:%s: friendly path is not configured",
+				member.HostName, member.FriendlyPath)
 		}
 	}
 
@@ -259,6 +311,8 @@ func getFileLocationsForHash(ctx context.Context, database *sql.DB, hash string,
 		ORDER BY f.hostname, f.path
 	`
 
+	groupDedupeVerbosef(opts, "Executing location query for hash=%s size=%s bytes", hash, formatBytes(size))
+	queryStarted := time.Now()
 	rows, err := database.QueryContext(ctx, query, hash, size)
 	if err != nil {
 		return nil, err
@@ -280,7 +334,11 @@ func getFileLocationsForHash(ctx context.Context, database *sql.DB, hash string,
 		}
 	}
 
-	return locations, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	groupDedupeVerbosef(opts, "Location query completed in %s", time.Since(queryStarted).Round(time.Millisecond))
+	return locations, nil
 }
 
 // processGroupDuplicates processes a group of duplicate files and decides which to keep/remove
