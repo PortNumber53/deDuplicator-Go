@@ -2,5 +2,29 @@
 set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel)"
+
+updates=()
+while read -r local_ref local_oid remote_ref remote_oid; do
+  if [[ -n "${local_ref}" ]]; then
+    updates+=("${local_ref} ${local_oid} ${remote_ref} ${remote_oid}")
+  fi
+done
+
+if [[ ${#updates[@]} -eq 0 ]]; then
+  echo "No refs need to be pushed; skipping BDD and version checks."
+  exit 0
+fi
+
 "${repo_root}/scripts/test-bdd.sh"
-VERSION_BASE_REF="${VERSION_BASE_REF:-origin/master}" "${repo_root}/scripts/check-version-bump.sh"
+
+version_base_ref="${VERSION_BASE_REF:-origin/master}"
+zero_oid="0000000000000000000000000000000000000000"
+for update in "${updates[@]}"; do
+  read -r _ _ remote_ref remote_oid <<< "${update}"
+  if [[ "${remote_ref}" == "refs/heads/master" && "${remote_oid}" != "${zero_oid}" ]]; then
+    version_base_ref="${remote_oid}"
+    break
+  fi
+done
+
+VERSION_BASE_REF="${version_base_ref}" "${repo_root}/scripts/check-version-bump.sh"

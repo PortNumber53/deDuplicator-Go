@@ -115,7 +115,8 @@ The pre-commit hook runs unit tests from regular `*_test.go` files. The pre-push
 hook runs BDD tests from `*_scenarios_test.go` files. The same suites can be run
 directly with `./scripts/test-unit.sh` and `./scripts/test-bdd.sh`. Do not bypass
 these checks with `--no-verify`. Pre-push also requires the utility `VERSION` in
-`main.go` to be greater than the version currently on `origin/master`.
+`main.go` to be greater than the version currently on the remote branch. A push
+with no ref updates skips the test and version checks.
 
 ### `/etc/dedupe/config.ini`
 
