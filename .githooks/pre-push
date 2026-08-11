@@ -2,4 +2,5 @@
 set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel)"
-exec "${repo_root}/scripts/test-bdd.sh"
+"${repo_root}/scripts/test-bdd.sh"
+VERSION_BASE_REF="${VERSION_BASE_REF:-origin/master}" "${repo_root}/scripts/check-version-bump.sh"
