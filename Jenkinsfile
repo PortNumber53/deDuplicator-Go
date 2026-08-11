@@ -2,9 +2,12 @@ pipeline {
   agent any
   options {
     timestamps()
+    ansiColor('xterm')
   }
 
   environment {
+    CI = "true"
+    NO_COLOR = "1"
     GO_VERSION = "1.24.0"
     HOSTS_AMD64 = "brain pinky crash"
     HOSTS_ARM64 = "rpi4"

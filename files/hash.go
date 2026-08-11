@@ -217,18 +217,9 @@ func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
 	}
 
 	// Create progress bar
-	bar := progressbar.NewOptions64(totalFiles,
-		progressbar.OptionEnableColorCodes(true),
+	bar := newProgressBar(totalFiles, "Processing files...",
 		progressbar.OptionShowCount(),
-		progressbar.OptionSetWidth(15),
-		progressbar.OptionSetDescription("[cyan]Processing files..."),
-		progressbar.OptionSetTheme(progressbar.Theme{
-			Saucer:        "[green]=[reset]",
-			SaucerHead:    "[green]>[reset]",
-			SaucerPadding: " ",
-			BarStart:      "[",
-			BarEnd:        "]",
-		}))
+		progressbar.OptionSetWidth(15))
 
 	// Prepare update statement
 	stmt, err := sqldb.Prepare(`

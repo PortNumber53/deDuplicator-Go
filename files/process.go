@@ -227,18 +227,9 @@ func ProcessFiles(ctx context.Context, db *sql.DB, dir string, opts FindOptions)
 	}
 
 	// Create progress bar
-	bar := progressbar.NewOptions64(int64(totalFiles),
-		progressbar.OptionEnableColorCodes(true),
+	bar := newProgressBar(int64(totalFiles), "Processing files...",
 		progressbar.OptionShowCount(),
-		progressbar.OptionSetWidth(15),
-		progressbar.OptionSetDescription("[cyan]Processing files..."),
-		progressbar.OptionSetTheme(progressbar.Theme{
-			Saucer:        "[green]=[reset]",
-			SaucerHead:    "[green]>[reset]",
-			SaucerPadding: " ",
-			BarStart:      "[",
-			BarEnd:        "]",
-		}))
+		progressbar.OptionSetWidth(15))
 
 	// Default to 4 workers if not specified
 	numWorkers := 4

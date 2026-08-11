@@ -103,18 +103,9 @@ func PruneNonExistentFiles(ctx context.Context, sqldb *sql.DB, opts PruneOptions
 	batchDeletes := 0
 
 	// Create progress bar
-	bar := progressbar.NewOptions64(int64(totalFiles), // This now matches the limited row count
-		progressbar.OptionEnableColorCodes(true),
+	bar := newProgressBar(int64(totalFiles), "Checking files...", // This now matches the limited row count
 		progressbar.OptionShowCount(),
-		progressbar.OptionSetWidth(15),
-		progressbar.OptionSetDescription("[cyan]Checking files..."),
-		progressbar.OptionSetTheme(progressbar.Theme{
-			Saucer:        "[green]=[reset]",
-			SaucerHead:    "[green]>[reset]",
-			SaucerPadding: " ",
-			BarStart:      "[",
-			BarEnd:        "]",
-		}))
+		progressbar.OptionSetWidth(15))
 
 	// Check each file
 	var removedNonexistent, removedSymlinks, removedDevices, removedMissing, removedDuplicatePaths int

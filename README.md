@@ -118,6 +118,14 @@ these checks with `--no-verify`. Pre-push also requires the utility `VERSION` in
 `main.go` to be greater than the version currently on the remote branch. A push
 with no ref updates skips the test and version checks.
 
+## Console output
+
+Interactive terminals show colored progress bars. Progress bars are hidden when
+stderr is redirected or when `CI`, `JENKINS_URL`, or `BUILD_NUMBER` is set;
+setting `NO_COLOR` keeps terminal progress but disables its ANSI colors. The
+Jenkins pipeline uses `ansiColor('xterm')`, which requires the Jenkins ANSI Color
+plugin, to render any remaining ANSI-formatted messages.
+
 ### `/etc/dedupe/config.ini`
 
 Example:

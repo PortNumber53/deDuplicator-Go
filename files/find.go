@@ -71,19 +71,10 @@ func FindFiles(ctx context.Context, sqldb *sql.DB, opts FindOptions) error {
 	}
 
 	// Create progress bar (indeterminate)
-	bar := progressbar.NewOptions(-1,
-		progressbar.OptionEnableColorCodes(true),
+	bar := newProgressBar(-1, "Finding files...",
 		progressbar.OptionShowCount(),
 		progressbar.OptionSetWidth(15),
-		progressbar.OptionSetDescription("[cyan]Finding files..."),
-		progressbar.OptionSpinnerType(14),
-		progressbar.OptionSetTheme(progressbar.Theme{
-			Saucer:        "[green]=[reset]",
-			SaucerHead:    "[green]>[reset]",
-			SaucerPadding: " ",
-			BarStart:      "[",
-			BarEnd:        "]",
-		}))
+		progressbar.OptionSpinnerType(14))
 
 	// Walk all configured paths, or just the requested one if opts.Path is set
 	if opts.Path != "" {
@@ -211,7 +202,6 @@ func FindFiles(ctx context.Context, sqldb *sql.DB, opts FindOptions) error {
 			log.Printf("\n%s Done processing \"%s\"", time.Now().Format("2006/01/02 15:04:05"), friendly)
 		}
 	}
-
 
 	if err != nil {
 		if err == context.Canceled {

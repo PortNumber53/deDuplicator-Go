@@ -12,17 +12,16 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/schollz/progressbar/v3"
 	"deduplicator/logging"
+	"github.com/schollz/progressbar/v3"
 )
 
 // hostPath describes a host and its absolute path for the friendly path
-//
 type hostPath struct {
-	Name      string
-	Hostname  string
-	RootPath  string
-	AbsPath   string
+	Name     string
+	Hostname string
+	RootPath string
+	AbsPath  string
 }
 
 type conflictEntry struct {
@@ -94,9 +93,9 @@ func MirrorFriendlyPath(ctx context.Context, db *sql.DB, friendlyPath string) er
 			}
 			conflicts = append(conflicts, conflictEntry{
 				RelPath: relPath,
-				Hosts: hostsList,
-				Hashes: hashesList,
-				Reason: "hash mismatch",
+				Hosts:   hostsList,
+				Hashes:  hashesList,
+				Reason:  "hash mismatch",
 			})
 			continue
 		}
@@ -126,7 +125,9 @@ func MirrorFriendlyPath(ctx context.Context, db *sql.DB, friendlyPath string) er
 			})
 		}
 	}
-	bar := progressbar.Default(int64(len(tasks)), "Mirroring files")
+	bar := newProgressBar(int64(len(tasks)), "Mirroring files",
+		progressbar.OptionShowCount(),
+		progressbar.OptionSetWidth(15))
 
 	for _, task := range tasks {
 		relPath := task.relPath
@@ -141,9 +142,9 @@ func MirrorFriendlyPath(ctx context.Context, db *sql.DB, friendlyPath string) er
 			// File exists on disk but not in DB: log conflict
 			conflicts = append(conflicts, conflictEntry{
 				RelPath: relPath,
-				Hosts: []string{dst.Hostname},
-				Hashes: []string{"n/a"},
-				Reason: "file exists on disk but not in DB",
+				Hosts:   []string{dst.Hostname},
+				Hashes:  []string{"n/a"},
+				Reason:  "file exists on disk but not in DB",
 			})
 			_ = bar.Add(1)
 			continue
@@ -156,9 +157,9 @@ func MirrorFriendlyPath(ctx context.Context, db *sql.DB, friendlyPath string) er
 			logging.ErrorLogger.Printf("Failed to create parent directory on %s: %v", dst.Hostname, mkErr)
 			conflicts = append(conflicts, conflictEntry{
 				RelPath: relPath,
-				Hosts: []string{dst.Hostname},
-				Hashes: []string{"n/a"},
-				Reason: fmt.Sprintf("mkdir failed: %v", mkErr),
+				Hosts:   []string{dst.Hostname},
+				Hashes:  []string{"n/a"},
+				Reason:  fmt.Sprintf("mkdir failed: %v", mkErr),
 			})
 			_ = bar.Add(1)
 			continue
@@ -178,9 +179,9 @@ func MirrorFriendlyPath(ctx context.Context, db *sql.DB, friendlyPath string) er
 			if copyErr != nil {
 				conflicts = append(conflicts, conflictEntry{
 					RelPath: relPath,
-					Hosts: []string{srcHost.Hostname, dst.Hostname},
-					Hashes: []string{hashVal},
-					Reason: fmt.Sprintf("rsync failed: %v", copyErr),
+					Hosts:   []string{srcHost.Hostname, dst.Hostname},
+					Hashes:  []string{hashVal},
+					Reason:  fmt.Sprintf("rsync failed: %v", copyErr),
 				})
 			} else {
 				copies = append(copies, fmt.Sprintf("%s -> %s: %s", srcHost.Hostname, dst.Hostname, relPath))
@@ -197,9 +198,9 @@ func MirrorFriendlyPath(ctx context.Context, db *sql.DB, friendlyPath string) er
 			if pullErr != nil {
 				conflicts = append(conflicts, conflictEntry{
 					RelPath: relPath,
-					Hosts: []string{srcHost.Hostname, dst.Hostname},
-					Hashes: []string{hashVal},
-					Reason: fmt.Sprintf("pull failed: %v", pullErr),
+					Hosts:   []string{srcHost.Hostname, dst.Hostname},
+					Hashes:  []string{hashVal},
+					Reason:  fmt.Sprintf("pull failed: %v", pullErr),
 				})
 				_ = bar.Add(1)
 				continue
@@ -212,9 +213,9 @@ func MirrorFriendlyPath(ctx context.Context, db *sql.DB, friendlyPath string) er
 			if pushErr != nil {
 				conflicts = append(conflicts, conflictEntry{
 					RelPath: relPath,
-					Hosts: []string{srcHost.Hostname, dst.Hostname},
-					Hashes: []string{hashVal},
-					Reason: fmt.Sprintf("push failed: %v", pushErr),
+					Hosts:   []string{srcHost.Hostname, dst.Hostname},
+					Hashes:  []string{hashVal},
+					Reason:  fmt.Sprintf("push failed: %v", pushErr),
 				})
 			} else {
 				// Cleanup

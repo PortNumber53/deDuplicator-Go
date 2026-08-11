@@ -102,19 +102,10 @@ func calculateFileHashInternal(ctx context.Context, filePath string, progressCh 
 	defer file.Close()
 
 	// Create a progress bar for this file
-	bar := progressbar.NewOptions64(fileInfo.Size(),
-		progressbar.OptionEnableColorCodes(true),
+	bar := newProgressBar(fileInfo.Size(), fmt.Sprintf("Hashing %s", filepath.Base(filePath)),
 		progressbar.OptionShowBytes(true),
 		progressbar.OptionSetWidth(30),
-		progressbar.OptionFullWidth(),
-		progressbar.OptionSetDescription(fmt.Sprintf("[cyan]Hashing %s", filepath.Base(filePath))),
-		progressbar.OptionSetTheme(progressbar.Theme{
-			Saucer:        "[green]=[reset]",
-			SaucerHead:    "[green]>[reset]",
-			SaucerPadding: " ",
-			BarStart:      "[",
-			BarEnd:        "]",
-		}))
+		progressbar.OptionFullWidth())
 
 	hash := sha256.New()
 	reader := bufio.NewReader(file)
@@ -151,6 +142,6 @@ func calculateFileHashInternal(ctx context.Context, filePath string, progressCh 
 		}
 	}
 
-	fmt.Println() // Add newline after progress bar
+	finishProgressLine()
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
