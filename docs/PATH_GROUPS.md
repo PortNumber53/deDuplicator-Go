@@ -105,12 +105,18 @@ deduplicator files dedupe-group <group_name> [options]
 
 Options:
   --balance-mode <mode>  Balance mode: priority (default), equal, capacity
-  --respect-limits       Honor min/max copy limits from group settings
+  --respect-limits       Honor stored limits instead of using the group member count
   --dry-run              Show what would be done without making changes (default)
   --run                  Actually perform the deduplication
   --min-size <bytes>     Only process files larger than this size
   --count <n>            Limit the number of duplicate groups to process
 ```
+
+By default, `dedupe-group` sets `min_copies` to the number of member paths in
+the group. It removes copies above that count but does not create missing
+copies; use `mirror-group` to populate every member path. Use
+`--respect-limits` to apply the stored `min_copies` and `max_copies` values
+instead.
 
 ## Mirroring Command
 
@@ -156,7 +162,8 @@ With `--respect-limits`:
 - If min_copies ≤ copies ≤ max_copies: Remove excess beyond min_copies
 
 Without `--respect-limits`:
-- Always keep exactly min_copies (from highest priority hosts)
+- Keep up to as many copies as there are group members, preferring distinct
+  hosts and then member priority
 
 ## Database Schema
 

@@ -446,7 +446,7 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 				fmt.Println("Usage: deduplicator files dedupe-group <group name> [options]")
 				fmt.Println("\nOptions:")
 				fmt.Println("  --balance-mode <mode>  Balance mode: priority (default), equal, capacity")
-				fmt.Println("  --respect-limits       Honor min/max copy limits from group settings")
+				fmt.Println("  --respect-limits       Honor stored limits instead of using the group member count")
 				fmt.Println("  --dry-run              Show what would be done without making changes")
 				fmt.Println("  --min-size <size>      Only process files larger than this size (for example, 10G)")
 				fmt.Println("  --count <n>            Limit the number of duplicate groups to process")

@@ -53,15 +53,17 @@ func DeduplicateByGroup(ctx context.Context, database *sql.DB, opts GroupDedupeO
 	if len(members) == 0 {
 		return fmt.Errorf("path group '%s' has no members", opts.GroupName)
 	}
-	if group.MinCopies < 1 {
-		return fmt.Errorf("path group '%s' has invalid min_copies=%d: must be at least 1", group.Name, group.MinCopies)
+
+	effectiveGroup := effectiveGroupCopyLimits(group, len(members), opts.RespectLimits)
+	if effectiveGroup.MinCopies < 1 {
+		return fmt.Errorf("path group '%s' has invalid min_copies=%d: must be at least 1", effectiveGroup.Name, effectiveGroup.MinCopies)
 	}
-	if group.MaxCopies != nil && *group.MaxCopies < group.MinCopies {
-		return fmt.Errorf("path group '%s' has invalid copy limits: max_copies=%d is less than min_copies=%d", group.Name, *group.MaxCopies, group.MinCopies)
+	if effectiveGroup.MaxCopies != nil && *effectiveGroup.MaxCopies < effectiveGroup.MinCopies {
+		return fmt.Errorf("path group '%s' has invalid copy limits: max_copies=%d is less than min_copies=%d", effectiveGroup.Name, *effectiveGroup.MaxCopies, effectiveGroup.MinCopies)
 	}
 
 	fmt.Printf("Processing path group '%s' (min_copies=%d, max_copies=%s)\n",
-		group.Name, group.MinCopies, formatMaxCopies(group.MaxCopies))
+		effectiveGroup.Name, effectiveGroup.MinCopies, formatMaxCopies(effectiveGroup.MaxCopies))
 	fmt.Printf("Group members: %d paths across hosts\n\n", len(members))
 
 	// Find duplicates across all hosts in the group
@@ -83,7 +85,7 @@ func DeduplicateByGroup(ctx context.Context, database *sql.DB, opts GroupDedupeO
 	failedGroups := 0
 
 	for _, dupGroup := range duplicates {
-		removed, saved, err := processGroupDuplicates(ctx, database, dupGroup, group, members, opts)
+		removed, saved, err := processGroupDuplicates(ctx, database, dupGroup, effectiveGroup, members, opts)
 		totalRemoved += removed
 		totalSaved += saved
 		if err != nil {
@@ -103,6 +105,18 @@ func DeduplicateByGroup(ctx context.Context, database *sql.DB, opts GroupDedupeO
 	}
 
 	return nil
+}
+
+// effectiveGroupCopyLimits returns the copy limits used for this run. By
+// default, group deduplication retains as many copies as there are member
+// paths. Stored group limits are an explicit opt-in through --respect-limits.
+func effectiveGroupCopyLimits(group *db.PathGroup, memberCount int, respectLimits bool) *db.PathGroup {
+	effective := *group
+	if !respectLimits {
+		effective.MinCopies = memberCount
+		effective.MaxCopies = nil
+	}
+	return &effective
 }
 
 // findGroupDuplicates finds all duplicate files across hosts in a path group

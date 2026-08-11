@@ -544,7 +544,7 @@ Options:
 
 Options:
   --balance-mode <mode>  Balance mode: priority (default), equal, capacity
-  --respect-limits       Honor min/max copy limits from group settings
+  --respect-limits       Honor stored limits instead of using the group member count
   --dry-run              Show what would be done without making changes (default)
   --run                  Actually perform the deduplication
   --min-size <size>      Only process files larger than this size (for example, 10G)

@@ -5,7 +5,40 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"deduplicator/db"
 )
+
+func TestEffectiveGroupCopyLimitsDefaultsToMemberCount(t *testing.T) {
+	configuredMax := 3
+	configured := &db.PathGroup{Name: "family", MinCopies: 2, MaxCopies: &configuredMax}
+
+	effective := effectiveGroupCopyLimits(configured, 3, false)
+
+	if effective.MinCopies != 3 {
+		t.Fatalf("min copies = %d, want member count 3", effective.MinCopies)
+	}
+	if effective.MaxCopies != nil {
+		t.Fatalf("max copies = %d, want unlimited when stored limits are not requested", *effective.MaxCopies)
+	}
+	if configured.MinCopies != 2 || configured.MaxCopies == nil || *configured.MaxCopies != 3 {
+		t.Fatalf("configured group was mutated: %+v", configured)
+	}
+}
+
+func TestEffectiveGroupCopyLimitsUsesStoredLimitsWhenRequested(t *testing.T) {
+	configuredMax := 3
+	configured := &db.PathGroup{Name: "family", MinCopies: 2, MaxCopies: &configuredMax}
+
+	effective := effectiveGroupCopyLimits(configured, 4, true)
+
+	if effective.MinCopies != 2 {
+		t.Fatalf("min copies = %d, want configured value 2", effective.MinCopies)
+	}
+	if effective.MaxCopies == nil || *effective.MaxCopies != 3 {
+		t.Fatalf("max copies = %v, want configured value 3", effective.MaxCopies)
+	}
+}
 
 func TestPlanGroupDuplicateLocationsPrefersDistinctHosts(t *testing.T) {
 	locations := []FileLocation{
