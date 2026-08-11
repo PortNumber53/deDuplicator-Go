@@ -204,21 +204,21 @@ func TestDefaultConfigFilesIncludeRequestedLocations(t *testing.T) {
 	if len(paths) < 2 {
 		t.Fatalf("expected at least system config and .env paths, got %#v", paths)
 	}
-	if paths[0] != "/etc/dedupe/config.ini" {
-		t.Fatalf("first config path=%q, want /etc/dedupe/config.ini", paths[0])
+	if paths[0] != "/etc/deDuplicator-Go/config.ini" {
+		t.Fatalf("first config path=%q, want /etc/deDuplicator-Go/config.ini", paths[0])
 	}
 	if paths[len(paths)-1] != ".env" {
 		t.Fatalf("last config path=%q, want .env", paths[len(paths)-1])
 	}
 	foundUserConfig := false
 	for _, path := range paths {
-		if strings.HasSuffix(path, filepath.Join(".config", "dedupe", "config.ini")) {
+		if strings.HasSuffix(path, filepath.Join(".config", "deDuplicator-Go", "config.ini")) {
 			foundUserConfig = true
 			break
 		}
 	}
 	if !foundUserConfig {
-		t.Fatalf("expected ~/.config/dedupe/config.ini in %#v", paths)
+		t.Fatalf("expected ~/.config/deDuplicator-Go/config.ini in %#v", paths)
 	}
 }
 

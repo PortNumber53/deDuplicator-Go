@@ -5,10 +5,13 @@ import (
 	"database/sql"
 	"deduplicator/db"
 	"deduplicator/logging"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 // GroupDedupeOptions extends DedupeOptions with group-aware settings
@@ -50,6 +53,12 @@ func DeduplicateByGroup(ctx context.Context, database *sql.DB, opts GroupDedupeO
 	if len(members) == 0 {
 		return fmt.Errorf("path group '%s' has no members", opts.GroupName)
 	}
+	if group.MinCopies < 1 {
+		return fmt.Errorf("path group '%s' has invalid min_copies=%d: must be at least 1", group.Name, group.MinCopies)
+	}
+	if group.MaxCopies != nil && *group.MaxCopies < group.MinCopies {
+		return fmt.Errorf("path group '%s' has invalid copy limits: max_copies=%d is less than min_copies=%d", group.Name, *group.MaxCopies, group.MinCopies)
+	}
 
 	fmt.Printf("Processing path group '%s' (min_copies=%d, max_copies=%s)\n",
 		group.Name, group.MinCopies, formatMaxCopies(group.MaxCopies))
@@ -71,21 +80,26 @@ func DeduplicateByGroup(ctx context.Context, database *sql.DB, opts GroupDedupeO
 	// Process each duplicate group
 	totalRemoved := 0
 	totalSaved := int64(0)
+	failedGroups := 0
 
 	for _, dupGroup := range duplicates {
 		removed, saved, err := processGroupDuplicates(ctx, database, dupGroup, group, members, opts)
-		if err != nil {
-			logging.ErrorLogger.Printf("Error processing hash %s: %v", dupGroup[0].Hash, err)
-			continue
-		}
 		totalRemoved += removed
 		totalSaved += saved
+		if err != nil {
+			logging.ErrorLogger.Printf("Error processing hash %s: %v", dupGroup[0].Hash, err)
+			failedGroups++
+			continue
+		}
 	}
 
 	if opts.DryRun {
 		fmt.Printf("\nDry run: Would remove %d files, saving %s\n", totalRemoved, formatBytes(totalSaved))
 	} else {
 		fmt.Printf("\nRemoved %d files, saved %s\n", totalRemoved, formatBytes(totalSaved))
+	}
+	if failedGroups > 0 {
+		return fmt.Errorf("failed to process %d duplicate file groups; see error log for details", failedGroups)
 	}
 
 	return nil
@@ -100,6 +114,7 @@ func findGroupDuplicates(ctx context.Context, database *sql.DB, members []db.Pat
 			FROM files f
 			JOIN hosts h ON LOWER(f.hostname) = LOWER(h.hostname)
 			WHERE f.hash IS NOT NULL
+			AND f.hash NOT IN ('TIMEOUT_ERROR', 'HASH_ERROR')
 			AND f.size IS NOT NULL
 			AND (
 	`
@@ -262,14 +277,6 @@ func processGroupDuplicates(ctx context.Context, database *sql.DB, locations []F
 
 	fmt.Printf("Hash: %s (size: %s, copies: %d)\n", locations[0].Hash, formatBytes(locations[0].Size), len(locations))
 
-	// Sort by priority (lower = higher priority to keep)
-	sort.Slice(locations, func(i, j int) bool {
-		if locations[i].Priority != locations[j].Priority {
-			return locations[i].Priority < locations[j].Priority
-		}
-		return locations[i].HostName < locations[j].HostName
-	})
-
 	// Determine how many copies to keep
 	keepCount := group.MinCopies
 	if opts.RespectLimits && group.MaxCopies != nil && len(locations) > *group.MaxCopies {
@@ -284,9 +291,9 @@ func processGroupDuplicates(ctx context.Context, database *sql.DB, locations []F
 		return 0, 0, nil
 	}
 
-	// Keep the first keepCount files (highest priority)
-	toKeep := locations[:keepCount]
-	toRemove := locations[keepCount:]
+	// Prefer one copy per host before retaining additional copies on a host.
+	// Priority determines which hosts and which path on each host win ties.
+	toKeep, toRemove := planGroupDuplicateLocations(locations, keepCount)
 
 	// Display what we're keeping
 	fmt.Printf("  Keeping %d copies:\n", len(toKeep))
@@ -294,9 +301,22 @@ func processGroupDuplicates(ctx context.Context, database *sql.DB, locations []F
 		fmt.Printf("  - %s:%s/%s (priority %d)\n", loc.HostName, loc.FriendlyPath, loc.Path, loc.Priority)
 	}
 
+	if !opts.DryRun {
+		for _, loc := range toKeep {
+			matches, err := groupFileMatchesRecordedSize(ctx, loc)
+			if err != nil {
+				return 0, 0, fmt.Errorf("could not verify keeper %s:%s/%s: %v", loc.HostName, loc.FriendlyPath, loc.Path, err)
+			}
+			if !matches {
+				return 0, 0, fmt.Errorf("refusing to remove duplicates because keeper is missing or its size changed: %s:%s/%s", loc.HostName, loc.FriendlyPath, loc.Path)
+			}
+		}
+	}
+
 	// Display and process removals
 	removed := 0
 	saved := int64(0)
+	failed := 0
 
 	if len(toRemove) > 0 {
 		if opts.DryRun {
@@ -306,25 +326,30 @@ func processGroupDuplicates(ctx context.Context, database *sql.DB, locations []F
 		}
 
 		for _, loc := range toRemove {
-			fullPath := filepath.Join(loc.RootFolder, loc.Path)
 			fmt.Printf("  - %s:%s/%s (priority %d)\n", loc.HostName, loc.FriendlyPath, loc.Path, loc.Priority)
 
 			if !opts.DryRun {
-				// Delete the file
-				if err := os.Remove(fullPath); err != nil {
-					if !os.IsNotExist(err) {
-						logging.ErrorLogger.Printf("Warning: Failed to delete file %s: %v", fullPath, err)
-						continue
-					}
+				if err := removeGroupFile(ctx, loc); err != nil {
+					logging.ErrorLogger.Printf("Warning: Failed to delete %s:%s/%s: %v", loc.HostName, loc.FriendlyPath, loc.Path, err)
+					failed++
+					continue
 				}
 
 				// Remove from database
-				_, err := database.Exec(`
+				result, err := database.Exec(`
 					DELETE FROM files
 					WHERE path = $1 AND LOWER(hostname) = LOWER($2)
-				`, loc.Path, loc.Hostname)
+					AND root_folder = $3 AND hash = $4 AND size = $5
+				`, loc.Path, loc.Hostname, loc.RootFolder, loc.Hash, loc.Size)
 				if err != nil {
 					logging.ErrorLogger.Printf("Warning: Failed to delete file from database: %v", err)
+					failed++
+					continue
+				}
+				rows, err := result.RowsAffected()
+				if err != nil || rows != 1 {
+					logging.ErrorLogger.Printf("Warning: Removed file but expected one matching database row, got rows=%d error=%v", rows, err)
+					failed++
 					continue
 				}
 			}
@@ -335,7 +360,138 @@ func processGroupDuplicates(ctx context.Context, database *sql.DB, locations []F
 	}
 
 	fmt.Println()
+	if failed > 0 {
+		return removed, saved, fmt.Errorf("failed to remove %d duplicate copies", failed)
+	}
 	return removed, saved, nil
+}
+
+// planGroupDuplicateLocations chooses keepers by priority while maximizing host diversity.
+// Only after every available host has contributed a keeper may another copy from a host be kept.
+func planGroupDuplicateLocations(locations []FileLocation, keepCount int) ([]FileLocation, []FileLocation) {
+	ordered := append([]FileLocation(nil), locations...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if ordered[i].Priority != ordered[j].Priority {
+			return ordered[i].Priority < ordered[j].Priority
+		}
+		if !strings.EqualFold(ordered[i].HostName, ordered[j].HostName) {
+			return strings.ToLower(ordered[i].HostName) < strings.ToLower(ordered[j].HostName)
+		}
+		if ordered[i].FriendlyPath != ordered[j].FriendlyPath {
+			return ordered[i].FriendlyPath < ordered[j].FriendlyPath
+		}
+		if ordered[i].Path != ordered[j].Path {
+			return ordered[i].Path < ordered[j].Path
+		}
+		return ordered[i].RootFolder < ordered[j].RootFolder
+	})
+
+	if keepCount >= len(ordered) {
+		return ordered, nil
+	}
+	if keepCount <= 0 {
+		return nil, ordered
+	}
+
+	selected := make([]bool, len(ordered))
+	selectedHosts := make(map[string]bool)
+	selectedCount := 0
+
+	for i, loc := range ordered {
+		hostKey := strings.ToLower(loc.HostName)
+		if selectedHosts[hostKey] {
+			continue
+		}
+		selected[i] = true
+		selectedHosts[hostKey] = true
+		selectedCount++
+		if selectedCount == keepCount {
+			break
+		}
+	}
+
+	for i := range ordered {
+		if selectedCount == keepCount {
+			break
+		}
+		if selected[i] {
+			continue
+		}
+		selected[i] = true
+		selectedCount++
+	}
+
+	toKeep := make([]FileLocation, 0, keepCount)
+	toRemove := make([]FileLocation, 0, len(ordered)-keepCount)
+	for i, loc := range ordered {
+		if selected[i] {
+			toKeep = append(toKeep, loc)
+		} else {
+			toRemove = append(toRemove, loc)
+		}
+	}
+	return toKeep, toRemove
+}
+
+func groupFileMatchesRecordedSize(ctx context.Context, loc FileLocation) (bool, error) {
+	fullPath := filepath.Join(loc.RootFolder, loc.Path)
+	localHost, err := os.Hostname()
+	if err != nil {
+		return false, err
+	}
+	if strings.EqualFold(localHost, loc.Hostname) {
+		info, err := os.Stat(fullPath)
+		if err == nil {
+			return info.Mode().IsRegular() && info.Size() == loc.Size, nil
+		}
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+
+	quotedPath := shellEscape(fullPath)
+	command := fmt.Sprintf("test -f %s && test \"$(stat -c %%s -- %s)\" -eq %d", quotedPath, quotedPath, loc.Size)
+	cmd := exec.CommandContext(ctx, "ssh", loc.Hostname, command)
+	err = cmd.Run()
+	if err == nil {
+		return true, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, fmt.Errorf("remote file check failed: %v", err)
+}
+
+func removeGroupFile(ctx context.Context, loc FileLocation) error {
+	fullPath := filepath.Join(loc.RootFolder, loc.Path)
+	localHost, err := os.Hostname()
+	if err != nil {
+		return err
+	}
+	if strings.EqualFold(localHost, loc.Hostname) {
+		info, err := os.Stat(fullPath)
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() || info.Size() != loc.Size {
+			return fmt.Errorf("file is missing or its size changed")
+		}
+		if err := os.Remove(fullPath); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	quotedPath := shellEscape(fullPath)
+	command := fmt.Sprintf("test -f %s && test \"$(stat -c %%s -- %s)\" -eq %d && rm -- %s", quotedPath, quotedPath, loc.Size, quotedPath)
+	cmd := exec.CommandContext(ctx, "ssh", loc.Hostname, command)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("remote remove failed: %v %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
 }
 
 // formatMaxCopies formats the max copies value

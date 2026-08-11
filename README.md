@@ -103,6 +103,19 @@ Deduplicator never overwrites environment variables that already exist. For unse
 2. `~/.config/dedupe/config.ini` (optional)
 3. A local `.env` file in the current working directory (optional)
 
+## Local test hooks
+
+Enable the tracked Git hooks once per clone:
+
+```bash
+./scripts/install-git-hooks.sh
+```
+
+The pre-commit hook runs unit tests from regular `*_test.go` files. The pre-push
+hook runs BDD tests from `*_scenarios_test.go` files. The same suites can be run
+directly with `./scripts/test-unit.sh` and `./scripts/test-bdd.sh`. Do not bypass
+these checks with `--no-verify`.
+
 ### `/etc/dedupe/config.ini`
 
 Example:

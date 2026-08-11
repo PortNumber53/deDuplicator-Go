@@ -448,7 +448,7 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 				fmt.Println("  --balance-mode <mode>  Balance mode: priority (default), equal, capacity")
 				fmt.Println("  --respect-limits       Honor min/max copy limits from group settings")
 				fmt.Println("  --dry-run              Show what would be done without making changes")
-				fmt.Println("  --min-size <bytes>     Only process files larger than this size")
+				fmt.Println("  --min-size <size>      Only process files larger than this size (for example, 10G)")
 				fmt.Println("  --count <n>            Limit the number of duplicate groups to process")
 				fmt.Println("  --run                  Actually perform the deduplication (opposite of dry-run)")
 				return nil
@@ -481,7 +481,11 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 				dryRun = false
 			case "--min-size":
 				if i+1 < len(args) {
-					fmt.Sscanf(args[i+1], "%d", &minSize)
+					parsed, err := files.ParseSize(args[i+1])
+					if err != nil {
+						return fmt.Errorf("error parsing min-size: %v", err)
+					}
+					minSize = parsed
 					i++
 				}
 			case "--count":

@@ -547,7 +547,7 @@ Options:
   --respect-limits       Honor min/max copy limits from group settings
   --dry-run              Show what would be done without making changes (default)
   --run                  Actually perform the deduplication
-  --min-size <bytes>     Only process files larger than this size
+  --min-size <size>      Only process files larger than this size (for example, 10G)
   --count <n>            Limit the number of duplicate groups to process`,
 		Examples: []string{
 			"deduplicator files dedupe-group photos --dry-run",
