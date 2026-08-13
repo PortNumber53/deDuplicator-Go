@@ -72,68 +72,197 @@ func TestEffectiveGroupCopyLimitsUsesStoredLimitsWhenRequested(t *testing.T) {
 	}
 }
 
-func TestPlanGroupDuplicateLocationsPrefersDistinctHosts(t *testing.T) {
+// familyGroupMembers mirrors a three-host group: Brain, PI4, and Pinky.
+func familyGroupMembers() []groupMember {
+	return []groupMember{
+		{Index: 0, HostName: "Brain", Hostname: "brain", FriendlyPath: "Personal", RootFolder: "/brain/personal", Priority: 100},
+		{Index: 1, HostName: "PI4", Hostname: "pi4", FriendlyPath: "BKP_Media", RootFolder: "/pi4/bkp", Priority: 100},
+		{Index: 2, HostName: "Pinky", Hostname: "pinky", FriendlyPath: "Personal", RootFolder: "/pinky/personal", Priority: 100},
+	}
+}
+
+func planHosts(locations []FileLocation) []string {
+	hosts := make([]string, 0, len(locations))
+	for _, loc := range locations {
+		hosts = append(hosts, loc.HostName)
+	}
+	return hosts
+}
+
+func TestPlanGroupDuplicateLocationsKeepsOneCopyPerHost(t *testing.T) {
+	members := familyGroupMembers()
 	locations := []FileLocation{
-		{HostName: "Brain", FriendlyPath: "Personal", Path: "copy-a", Priority: 100},
-		{HostName: "Brain", FriendlyPath: "Personal", Path: "copy-b", Priority: 100},
-		{HostName: "PI4", FriendlyPath: "BKP_Media", Path: "copy-c", Priority: 100},
-		{HostName: "Pinky", FriendlyPath: "Personal", Path: "copy-d", Priority: 100},
+		{HostName: "Brain", Hostname: "brain", FriendlyPath: "Personal", Path: "copy-a", Priority: 100, MemberIndex: 0},
+		{HostName: "Brain", Hostname: "brain", FriendlyPath: "Personal", Path: "copy-b", Priority: 100, MemberIndex: 0},
+		{HostName: "PI4", Hostname: "pi4", FriendlyPath: "BKP_Media", Path: "copy-c", Priority: 100, MemberIndex: 1},
+		{HostName: "Pinky", Hostname: "pinky", FriendlyPath: "Personal", Path: "copy-d", Priority: 100, MemberIndex: 2},
 	}
 
-	keepers, removals := planGroupDuplicateLocations(locations, 2)
-	if len(keepers) != 2 || len(removals) != 2 {
-		t.Fatalf("got %d keepers and %d removals, want 2 and 2", len(keepers), len(removals))
+	plan := planGroupDuplicateLocations(locations, members, 3)
+
+	if len(plan.Keep) != 3 || len(plan.Remove) != 1 || len(plan.Replicate) != 0 {
+		t.Fatalf("plan = %d keep, %d remove, %d replicate; want 3, 1, 0",
+			len(plan.Keep), len(plan.Remove), len(plan.Replicate))
 	}
-	if keepers[0].HostName == keepers[1].HostName {
-		t.Fatalf("keepers are both on %s; want distinct hosts", keepers[0].HostName)
+	if got, want := strings.Join(planHosts(plan.Keep), ","), "Brain,PI4,Pinky"; got != want {
+		t.Fatalf("keeper hosts = %s; want %s", got, want)
 	}
-	if keepers[0].HostName != "Brain" || keepers[1].HostName != "PI4" {
-		t.Fatalf("keeper hosts = %s, %s; want Brain, PI4", keepers[0].HostName, keepers[1].HostName)
+	if plan.Remove[0].Path != "copy-b" {
+		t.Fatalf("removed %s; want the second Brain copy", plan.Remove[0].Path)
+	}
+}
+
+func TestPlanGroupDuplicateLocationsReplicatesToHostsWithoutACopy(t *testing.T) {
+	members := familyGroupMembers()
+	locations := []FileLocation{
+		{HostName: "Brain", Hostname: "brain", FriendlyPath: "Personal", Path: "dir/i00025.avi", Priority: 100, MemberIndex: 0},
+		{HostName: "Brain", Hostname: "brain", FriendlyPath: "Personal", Path: "other/i00025.avi", Priority: 100, MemberIndex: 0},
+		{HostName: "Brain", Hostname: "brain", FriendlyPath: "Personal", Path: "third/i00025.avi", Priority: 100, MemberIndex: 0},
+		{HostName: "PI4", Hostname: "pi4", FriendlyPath: "BKP_Media", Path: "dir/i00025.avi", Priority: 100, MemberIndex: 1},
+	}
+
+	plan := planGroupDuplicateLocations(locations, members, 3)
+
+	if len(plan.Keep) != 2 || len(plan.Remove) != 2 {
+		t.Fatalf("plan = %d keep, %d remove; want 2 and 2", len(plan.Keep), len(plan.Remove))
+	}
+	if got, want := strings.Join(planHosts(plan.Keep), ","), "Brain,PI4"; got != want {
+		t.Fatalf("keeper hosts = %s; want %s", got, want)
+	}
+	if len(plan.Replicate) != 1 {
+		t.Fatalf("replication tasks = %d; want 1 copy to the host without one", len(plan.Replicate))
+	}
+	task := plan.Replicate[0]
+	if task.DstMember.HostName != "Pinky" {
+		t.Fatalf("replication destination = %s; want Pinky", task.DstMember.HostName)
+	}
+	if task.SrcMember.HostName != "Brain" || task.Source.Path != "dir/i00025.avi" || task.RelPath != "dir/i00025.avi" {
+		t.Fatalf("replication source = %+v, rel path = %s; want the preferred Brain copy", task.Source, task.RelPath)
+	}
+}
+
+func TestPlanGroupDuplicateLocationsReplicatesWhenAllCopiesShareOneHost(t *testing.T) {
+	members := familyGroupMembers()
+	locations := []FileLocation{
+		{HostName: "Brain", Hostname: "brain", FriendlyPath: "Personal", Path: "copy-a", Priority: 100, MemberIndex: 0},
+		{HostName: "Brain", Hostname: "brain", FriendlyPath: "Personal", Path: "copy-b", Priority: 100, MemberIndex: 0},
+	}
+
+	plan := planGroupDuplicateLocations(locations, members, 3)
+
+	if len(plan.Keep) != 1 || plan.Keep[0].Path != "copy-a" {
+		t.Fatalf("keepers = %+v; want only the preferred Brain copy", plan.Keep)
+	}
+	if len(plan.Remove) != 1 || plan.Remove[0].Path != "copy-b" {
+		t.Fatalf("removals = %+v; want the extra Brain copy", plan.Remove)
+	}
+	if len(plan.Replicate) != 2 {
+		t.Fatalf("replication tasks = %d; want copies to PI4 and Pinky", len(plan.Replicate))
+	}
+	if plan.Replicate[0].DstMember.HostName != "PI4" || plan.Replicate[1].DstMember.HostName != "Pinky" {
+		t.Fatalf("replication destinations = %s, %s; want PI4, Pinky",
+			plan.Replicate[0].DstMember.HostName, plan.Replicate[1].DstMember.HostName)
 	}
 }
 
 func TestPlanGroupDuplicateLocationsUsesPriorityAcrossHosts(t *testing.T) {
+	members := []groupMember{
+		{Index: 0, HostName: "Brain", Hostname: "brain", FriendlyPath: "Preferred", RootFolder: "/brain/preferred", Priority: 10},
+		{Index: 1, HostName: "Brain", Hostname: "brain", FriendlyPath: "Secondary", RootFolder: "/brain/secondary", Priority: 50},
+		{Index: 2, HostName: "PI4", Hostname: "pi4", FriendlyPath: "BKP_Media", RootFolder: "/pi4/bkp", Priority: 100},
+		{Index: 3, HostName: "Pinky", Hostname: "pinky", FriendlyPath: "Personal", RootFolder: "/pinky/personal", Priority: 200},
+	}
 	locations := []FileLocation{
-		{HostName: "Brain", Path: "less-preferred", Priority: 50},
-		{HostName: "Brain", Path: "preferred", Priority: 10},
-		{HostName: "PI4", Path: "backup", Priority: 100},
-		{HostName: "Pinky", Path: "archive", Priority: 200},
+		{HostName: "Brain", Hostname: "brain", Path: "less-preferred", Priority: 50, MemberIndex: 1},
+		{HostName: "Brain", Hostname: "brain", Path: "preferred", Priority: 10, MemberIndex: 0},
+		{HostName: "PI4", Hostname: "pi4", Path: "backup", Priority: 100, MemberIndex: 2},
+		{HostName: "Pinky", Hostname: "pinky", Path: "archive", Priority: 200, MemberIndex: 3},
 	}
 
-	keepers, _ := planGroupDuplicateLocations(locations, 2)
-	if keepers[0].HostName != "Brain" || keepers[0].Path != "preferred" {
-		t.Fatalf("first keeper = %+v; want preferred Brain copy", keepers[0])
+	plan := planGroupDuplicateLocations(locations, members, 2)
+
+	if len(plan.Keep) != 2 || len(plan.Replicate) != 0 {
+		t.Fatalf("plan = %d keep, %d replicate; want 2 and 0", len(plan.Keep), len(plan.Replicate))
 	}
-	if keepers[1].HostName != "PI4" {
-		t.Fatalf("second keeper host = %s; want PI4", keepers[1].HostName)
+	if plan.Keep[0].HostName != "Brain" || plan.Keep[0].Path != "preferred" {
+		t.Fatalf("first keeper = %+v; want preferred Brain copy", plan.Keep[0])
+	}
+	if plan.Keep[1].HostName != "PI4" {
+		t.Fatalf("second keeper host = %s; want PI4", plan.Keep[1].HostName)
+	}
+	if len(plan.Remove) != 2 {
+		t.Fatalf("removals = %+v; want the extra Brain copy and the uncovered Pinky copy", plan.Remove)
 	}
 }
 
-func TestPlanGroupDuplicateLocationsFallsBackToSameHost(t *testing.T) {
+func TestPlanGroupDuplicateLocationsKeepsSecondCopyOnlyWhenHostsRunOut(t *testing.T) {
+	members := []groupMember{
+		{Index: 0, HostName: "Brain", Hostname: "brain", FriendlyPath: "Personal", RootFolder: "/brain/personal", Priority: 100},
+		{Index: 1, HostName: "Brain", Hostname: "brain", FriendlyPath: "Media", RootFolder: "/brain/media", Priority: 100},
+		{Index: 2, HostName: "PI4", Hostname: "pi4", FriendlyPath: "BKP_Media", RootFolder: "/pi4/bkp", Priority: 100},
+	}
 	locations := []FileLocation{
-		{HostName: "Brain", Path: "copy-c", Priority: 100},
-		{HostName: "Brain", Path: "copy-a", Priority: 100},
-		{HostName: "Brain", Path: "copy-b", Priority: 100},
+		{HostName: "Brain", Hostname: "brain", FriendlyPath: "Personal", Path: "copy-a", Priority: 100, MemberIndex: 0},
+		{HostName: "Brain", Hostname: "brain", FriendlyPath: "Media", Path: "copy-b", Priority: 100, MemberIndex: 1},
+		{HostName: "Brain", Hostname: "brain", FriendlyPath: "Media", Path: "copy-c", Priority: 100, MemberIndex: 1},
+		{HostName: "PI4", Hostname: "pi4", FriendlyPath: "BKP_Media", Path: "copy-d", Priority: 100, MemberIndex: 2},
 	}
 
-	keepers, removals := planGroupDuplicateLocations(locations, 2)
-	if len(keepers) != 2 || len(removals) != 1 {
-		t.Fatalf("got %d keepers and %d removals, want 2 and 1", len(keepers), len(removals))
+	// Three member paths across two hosts: the third copy has nowhere else to go.
+	plan := planGroupDuplicateLocations(locations, members, 3)
+
+	if len(plan.Keep) != 3 || len(plan.Remove) != 1 || len(plan.Replicate) != 0 {
+		t.Fatalf("plan = %d keep, %d remove, %d replicate; want 3, 1, 0",
+			len(plan.Keep), len(plan.Remove), len(plan.Replicate))
 	}
-	if keepers[0].Path != "copy-a" || keepers[1].Path != "copy-b" {
-		t.Fatalf("keeper paths = %s, %s; want deterministic copy-a, copy-b", keepers[0].Path, keepers[1].Path)
+	if plan.Remove[0].Path != "copy-c" {
+		t.Fatalf("removed %s; want the third Brain copy", plan.Remove[0].Path)
 	}
 }
 
-func TestPlanGroupDuplicateLocationsKeepsAllWhenAtMinimum(t *testing.T) {
+func TestPlanGroupDuplicateLocationsNeverRemovesTheLastCopy(t *testing.T) {
+	members := familyGroupMembers()
 	locations := []FileLocation{
-		{HostName: "Brain", Path: "copy-a", Priority: 100},
-		{HostName: "PI4", Path: "copy-b", Priority: 100},
+		{HostName: "Pinky", Hostname: "pinky", FriendlyPath: "Personal", Path: "copy-a", Priority: 100, MemberIndex: 2},
+		{HostName: "Pinky", Hostname: "pinky", FriendlyPath: "Personal", Path: "copy-b", Priority: 100, MemberIndex: 2},
 	}
 
-	keepers, removals := planGroupDuplicateLocations(locations, 2)
-	if len(keepers) != 2 || len(removals) != 0 {
-		t.Fatalf("got %d keepers and %d removals, want 2 and 0", len(keepers), len(removals))
+	// A max_copies of 1 covers only Brain, which holds no copy of this file.
+	plan := planGroupDuplicateLocations(locations, members, 1)
+
+	if len(plan.Keep) != 1 || plan.Keep[0].Path != "copy-a" {
+		t.Fatalf("keepers = %+v; want the single best Pinky copy", plan.Keep)
+	}
+	if len(plan.Replicate) != 0 {
+		t.Fatalf("replication tasks = %d; want none when the target is already met", len(plan.Replicate))
+	}
+	if len(plan.Remove) != 1 || plan.Remove[0].Path != "copy-b" {
+		t.Fatalf("removals = %+v; want the extra Pinky copy", plan.Remove)
+	}
+}
+
+func TestGroupDedupeTargetCopies(t *testing.T) {
+	maxCopies := func(n int) *int { return &n }
+
+	tests := []struct {
+		name      string
+		group     *db.PathGroup
+		hostCount int
+		want      int
+	}{
+		{name: "one copy per host", group: &db.PathGroup{MinCopies: 3}, hostCount: 3, want: 3},
+		{name: "min copies above host count", group: &db.PathGroup{MinCopies: 4}, hostCount: 2, want: 4},
+		{name: "hosts above min copies", group: &db.PathGroup{MinCopies: 2}, hostCount: 3, want: 3},
+		{name: "max copies caps hosts", group: &db.PathGroup{MinCopies: 2, MaxCopies: maxCopies(2)}, hostCount: 3, want: 2},
+		{name: "never below one", group: &db.PathGroup{MinCopies: 0}, hostCount: 0, want: 1},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := groupDedupeTargetCopies(test.group, test.hostCount); got != test.want {
+				t.Fatalf("target copies = %d, want %d", got, test.want)
+			}
+		})
 	}
 }
 

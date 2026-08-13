@@ -444,6 +444,8 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 		for _, arg := range args[1:] {
 			if arg == "--help" || arg == "help" {
 				fmt.Println("Usage: deduplicator files dedupe-group <group name> [options]")
+				fmt.Println("\nKeeps one copy of each file per group host: missing copies are created")
+				fmt.Println("on group hosts that lack the file, and extra copies are removed.")
 				fmt.Println("\nOptions:")
 				fmt.Println("  --balance-mode <mode>  Balance mode: priority (default), equal, capacity")
 				fmt.Println("  --respect-limits       Honor stored limits instead of using the group member count")

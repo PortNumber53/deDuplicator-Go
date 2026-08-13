@@ -21,7 +21,10 @@ type GroupMirrorOptions struct {
 	DryRun    bool
 }
 
-type groupMirrorMember struct {
+// groupMember is one member path of a path group resolved to a concrete host
+// and root folder. It is shared by mirror-group and dedupe-group; FileCount is
+// only populated for mirroring.
+type groupMember struct {
 	Index        int
 	HostName     string
 	Hostname     string
@@ -43,14 +46,14 @@ type groupMirrorTask struct {
 	Size      int64
 	RelPath   string
 	Source    groupMirrorLocation
-	SrcMember groupMirrorMember
-	DstMember groupMirrorMember
+	SrcMember groupMember
+	DstMember groupMember
 }
 
 type groupMirrorConflict struct {
 	Hash   string
 	Path   string
-	Member groupMirrorMember
+	Member groupMember
 	Reason string
 }
 
@@ -176,7 +179,10 @@ func MirrorGroup(ctx context.Context, database *sql.DB, opts GroupMirrorOptions)
 	return nil
 }
 
-func resolveGroupMirrorMembers(ctx context.Context, database *sql.DB, groupName string) ([]groupMirrorMember, error) {
+// resolveGroupMembers resolves every member path of a group to a concrete host
+// and root folder, in group priority order. It is shared by mirror-group and
+// dedupe-group; only mirroring needs the per-member file counts.
+func resolveGroupMembers(database *sql.DB, groupName string) ([]groupMember, error) {
 	if _, err := db.GetPathGroup(database, groupName); err != nil {
 		return nil, fmt.Errorf("error getting path group: %v", err)
 	}
@@ -186,7 +192,7 @@ func resolveGroupMirrorMembers(ctx context.Context, database *sql.DB, groupName 
 		return nil, fmt.Errorf("error listing group members: %v", err)
 	}
 
-	members := make([]groupMirrorMember, 0, len(groupMembers))
+	members := make([]groupMember, 0, len(groupMembers))
 	for i, member := range groupMembers {
 		host, err := db.GetHost(database, member.HostName)
 		if err != nil {
@@ -201,25 +207,36 @@ func resolveGroupMirrorMembers(ctx context.Context, database *sql.DB, groupName 
 			return nil, fmt.Errorf("friendly path '%s' not found on host '%s'", member.FriendlyPath, member.HostName)
 		}
 
-		mirrorMember := groupMirrorMember{
+		members = append(members, groupMember{
 			Index:        i,
 			HostName:     member.HostName,
 			Hostname:     host.Hostname,
 			FriendlyPath: member.FriendlyPath,
 			RootFolder:   rootFolder,
 			Priority:     member.Priority,
-		}
-		mirrorMember.FileCount, err = countGroupMirrorMemberFiles(ctx, database, mirrorMember)
-		if err != nil {
-			return nil, err
-		}
-		members = append(members, mirrorMember)
+		})
 	}
 
 	return members, nil
 }
 
-func countGroupMirrorMemberFiles(ctx context.Context, database *sql.DB, member groupMirrorMember) (int64, error) {
+func resolveGroupMirrorMembers(ctx context.Context, database *sql.DB, groupName string) ([]groupMember, error) {
+	members, err := resolveGroupMembers(database, groupName)
+	if err != nil {
+		return nil, err
+	}
+
+	for i := range members {
+		members[i].FileCount, err = countGroupMirrorMemberFiles(ctx, database, members[i])
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return members, nil
+}
+
+func countGroupMirrorMemberFiles(ctx context.Context, database *sql.DB, member groupMember) (int64, error) {
 	var count int64
 	err := database.QueryRowContext(ctx, `
 		SELECT COUNT(*)
@@ -233,7 +250,7 @@ func countGroupMirrorMemberFiles(ctx context.Context, database *sql.DB, member g
 	return count, nil
 }
 
-func loadGroupMirrorHashes(ctx context.Context, database *sql.DB, members []groupMirrorMember) (map[string][]groupMirrorLocation, map[int]map[string]string, error) {
+func loadGroupMirrorHashes(ctx context.Context, database *sql.DB, members []groupMember) (map[string][]groupMirrorLocation, map[int]map[string]string, error) {
 	hashLocations := make(map[string][]groupMirrorLocation)
 	memberPathHashes := make(map[int]map[string]string, len(members))
 
@@ -278,7 +295,7 @@ func loadGroupMirrorHashes(ctx context.Context, database *sql.DB, members []grou
 	return hashLocations, memberPathHashes, nil
 }
 
-func planGroupMirrorTasks(hashLocations map[string][]groupMirrorLocation, members []groupMirrorMember, memberPathHashes map[int]map[string]string) ([]groupMirrorTask, []groupMirrorConflict) {
+func planGroupMirrorTasks(hashLocations map[string][]groupMirrorLocation, members []groupMember, memberPathHashes map[int]map[string]string) ([]groupMirrorTask, []groupMirrorConflict) {
 	var tasks []groupMirrorTask
 	var conflicts []groupMirrorConflict
 	plannedDestPaths := make(map[int]map[string]string, len(members))
@@ -378,7 +395,7 @@ func groupMirrorCommonSize(locations []groupMirrorLocation) (int64, bool) {
 	return size, true
 }
 
-func chooseGroupMirrorPath(locations []groupMirrorLocation, members []groupMirrorMember) (string, bool) {
+func chooseGroupMirrorPath(locations []groupMirrorLocation, members []groupMember) (string, bool) {
 	if len(locations) == 0 {
 		return "", false
 	}
@@ -424,7 +441,7 @@ func chooseGroupMirrorPath(locations []groupMirrorLocation, members []groupMirro
 	return candidates[0].Path, true
 }
 
-func chooseGroupMirrorSource(locations []groupMirrorLocation, members []groupMirrorMember, relPath string) (groupMirrorLocation, bool) {
+func chooseGroupMirrorSource(locations []groupMirrorLocation, members []groupMember, relPath string) (groupMirrorLocation, bool) {
 	var candidates []groupMirrorLocation
 	for _, loc := range locations {
 		if loc.Path == relPath {
@@ -460,7 +477,7 @@ func cleanGroupMirrorRelPath(relPath string) (string, error) {
 	return cleaned, nil
 }
 
-func groupMirrorFileExists(ctx context.Context, localHost string, member groupMirrorMember, absPath string) (bool, error) {
+func groupMirrorFileExists(ctx context.Context, localHost string, member groupMember, absPath string) (bool, error) {
 	if groupMirrorIsLocal(localHost, member) {
 		_, err := os.Stat(absPath)
 		if err == nil {
@@ -484,7 +501,7 @@ func groupMirrorFileExists(ctx context.Context, localHost string, member groupMi
 	return false, fmt.Errorf("ssh destination check failed: %v", err)
 }
 
-func ensureGroupMirrorParentDir(ctx context.Context, localHost string, member groupMirrorMember, absPath string) error {
+func ensureGroupMirrorParentDir(ctx context.Context, localHost string, member groupMember, absPath string) error {
 	parentDir := filepath.Dir(absPath)
 	if groupMirrorIsLocal(localHost, member) {
 		if err := os.MkdirAll(parentDir, 0755); err != nil {
@@ -584,18 +601,18 @@ func recordGroupMirrorCopy(ctx context.Context, database *sql.DB, task groupMirr
 	return nil
 }
 
-func groupMirrorRsyncEndpoint(localHost string, member groupMirrorMember, absPath string) string {
+func groupMirrorRsyncEndpoint(localHost string, member groupMember, absPath string) string {
 	if groupMirrorIsLocal(localHost, member) {
 		return absPath
 	}
 	return member.Hostname + ":" + shellEscape(absPath)
 }
 
-func groupMirrorIsLocal(localHost string, member groupMirrorMember) bool {
+func groupMirrorIsLocal(localHost string, member groupMember) bool {
 	return strings.EqualFold(localHost, member.Hostname)
 }
 
-func groupMirrorMemberLabel(member groupMirrorMember) string {
+func groupMirrorMemberLabel(member groupMember) string {
 	return fmt.Sprintf("%s:%s", member.HostName, member.FriendlyPath)
 }
 

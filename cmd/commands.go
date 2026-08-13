@@ -351,7 +351,7 @@ Subcommands:
   import      - Import files from another location
   mirror      - Mirror a friendly path (implementation-specific)
   mirror-group - Mirror missing hashes across every path in a path group
-  dedupe-group - Balance/limit duplicates across a path group
+  dedupe-group - Keep one copy per host in a path group and remove the rest
 
 Use 'files <subcommand> --help' for more information on a specific subcommand.`,
 		Examples: []string{
@@ -541,6 +541,11 @@ Options:
 		Description: "Balance/limit duplicates across a path group",
 		Usage:       "files dedupe-group <group name> [--balance-mode MODE] [--respect-limits] [--dry-run|--run] [--min-size BYTES] [--count N] [--verbose]",
 		Help: `Deduplicate files across all hosts/paths in a path group.
+
+Each duplicated file ends up with one copy per group host: copies are created on
+group hosts that are missing the file, and every copy above one per host is
+removed. A second copy on the same host is only kept when the group has fewer
+hosts than the target copy count.
 
 Options:
   --balance-mode <mode>  Balance mode: priority (default), equal, capacity

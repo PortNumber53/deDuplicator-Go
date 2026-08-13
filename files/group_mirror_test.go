@@ -17,7 +17,7 @@ import (
 )
 
 func TestChooseGroupMirrorPathPrefersMostCommonPath(t *testing.T) {
-	members := []groupMirrorMember{
+	members := []groupMember{
 		{Index: 0, HostName: "Brain", FriendlyPath: "Personal", FileCount: 10},
 		{Index: 1, HostName: "PI4", FriendlyPath: "BKP_Media", FileCount: 50},
 		{Index: 2, HostName: "Pinky", FriendlyPath: "Personal", FileCount: 20},
@@ -38,7 +38,7 @@ func TestChooseGroupMirrorPathPrefersMostCommonPath(t *testing.T) {
 }
 
 func TestChooseGroupMirrorPathUsesMostPopulatedMemberAsTieBreaker(t *testing.T) {
-	members := []groupMirrorMember{
+	members := []groupMember{
 		{Index: 0, HostName: "Brain", FriendlyPath: "Personal", FileCount: 10},
 		{Index: 1, HostName: "PI4", FriendlyPath: "BKP_Media", FileCount: 50},
 		{Index: 2, HostName: "Pinky", FriendlyPath: "Personal", FileCount: 20},
@@ -59,7 +59,7 @@ func TestChooseGroupMirrorPathUsesMostPopulatedMemberAsTieBreaker(t *testing.T) 
 }
 
 func TestPlanGroupMirrorTasksSkipsOccupiedDestinationPath(t *testing.T) {
-	members := []groupMirrorMember{
+	members := []groupMember{
 		{Index: 0, HostName: "Brain", FriendlyPath: "Personal", FileCount: 20},
 		{Index: 1, HostName: "PI4", FriendlyPath: "BKP_Media", FileCount: 10},
 	}

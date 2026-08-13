@@ -113,11 +113,30 @@ Options:
   --verbose              Show member, query, and candidate processing details
 ```
 
-By default, `dedupe-group` sets `min_copies` to the number of member paths in
-the group. It removes copies above that count but does not create missing
-copies; use `mirror-group` to populate every member path. Use
-`--respect-limits` to apply the stored `min_copies` and `max_copies` values
-instead.
+`dedupe-group` keeps **one copy per host** in the group. For every duplicated
+file it:
+
+1. Keeps the highest-priority copy on each group host that has one.
+2. Copies the file to group hosts that do not have it yet (same transfer path as
+   `mirror-group`).
+3. Removes every remaining copy.
+
+A second copy on the same host is only kept when the group has fewer hosts than
+the target copy count. For example, a group whose three member paths live on
+Brain, PI4, and Pinky ends up with three copies on three different hosts,
+regardless of how many copies started out on a single host.
+
+The target copy count is the number of distinct member hosts, raised to
+`min_copies` when the group has fewer hosts than that. By default `min_copies`
+is the number of member paths in the group; use `--respect-limits` to apply the
+stored `min_copies` and `max_copies` values instead. When `max_copies` is lower
+than the number of hosts, only the highest-priority hosts are covered and copies
+on the remaining hosts are removed. The last copy of a file is never removed.
+
+Removals for a file are held back until all of its missing copies exist, so a
+failed transfer leaves the existing copies in place. Files that have only one
+copy in the group are not touched; use `mirror-group` to populate every member
+path for those.
 
 Verbose mode reports each member path as it is resolved, when the duplicate
 candidate and location queries begin, how long they take, and how many rows are
@@ -140,36 +159,41 @@ files, reducing unnecessary folder/path proliferation.
 
 ## How It Works
 
-### Priority-Based Retention
+### One Copy Per Host
 
 When deduplicating a group, the system:
 
 1. **Finds duplicates** across all hosts in the group
 2. **Sorts by priority** (lower = keep first)
-3. **Keeps minimum copies** from highest priority hosts
-4. **Removes excess copies** from lower priority hosts
+3. **Keeps the best copy on each host** it is meant to cover
+4. **Copies the file to hosts that do not have it**
+5. **Removes every other copy**, including extra copies on a host it already
+   keeps a copy on
 
 ### Example Scenario
 
 Given:
-- Group "photos" with min_copies=2, max_copies=3
-- brain (priority 10), pinky (priority 50), rpi4 (priority 100)
-- File "vacation.jpg" exists on all three hosts
+- Group "family" with members on Brain, PI4, and Pinky (target: 3 copies)
+- File "i00025.avi" has 4 copies on Brain and 1 copy on PI4
 
 Result:
-- **Keep**: brain (priority 10), pinky (priority 50)
-- **Remove**: rpi4 (priority 100)
+- **Keep**: the highest-priority Brain copy, the PI4 copy
+- **Copy**: Brain → Pinky (Pinky has no copy yet)
+- **Remove**: the 3 extra Brain copies
+
+The file ends up with 3 copies on 3 different hosts.
 
 ### Respecting Limits
 
 With `--respect-limits`:
-- If copies < min_copies: Keep all copies (don't remove any)
-- If copies > max_copies: Remove excess from lowest priority hosts
-- If min_copies ≤ copies ≤ max_copies: Remove excess beyond min_copies
+- Target copies = number of member hosts, raised to `min_copies` and capped by
+  `max_copies`
+- If `max_copies` is lower than the host count, only the highest-priority hosts
+  keep a copy
 
 Without `--respect-limits`:
-- Keep up to as many copies as there are group members, preferring distinct
-  hosts and then member priority
+- Target copies = number of member hosts, raised to the number of group members
+  when several member paths share a host
 
 ## Database Schema
 
