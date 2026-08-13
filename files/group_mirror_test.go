@@ -181,3 +181,40 @@ func expectGroupMirrorNoIndexedPathConflict(mock sqlmock.Sqlmock, hostname, path
 		WithArgs(hostname, path, root).
 		WillReturnRows(sqlmock.NewRows([]string{"root_folder", "hash"}))
 }
+
+// rsync must receive the remote path unquoted. Quoting it made rsync 3.2.4 and
+// newer, which protect args by default, treat the quotes as part of the file
+// name and resolve the path relative to the remote home directory.
+func TestCopyGroupMirrorFileSendsUnquotedRemotePath(t *testing.T) {
+	stubDir := t.TempDir()
+	argsFile := filepath.Join(stubDir, "rsync-args")
+	writeStub(t, stubDir, "rsync", "#!/bin/sh\nfor a in \"$@\"; do echo \"$a\" >> "+argsFile+"; done\nexit 0\n")
+	t.Setenv("PATH", stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	task := groupMirrorTask{
+		Hash:      "hash-family",
+		Size:      5,
+		RelPath:   "PINKY/brain2/40000/i00025.avi",
+		SrcMember: groupMember{HostName: "Brain", Hostname: "brain", FriendlyPath: "Personal", RootFolder: "/personal/"},
+		DstMember: groupMember{HostName: "Pinky", Hostname: "pinky", FriendlyPath: "Personal", RootFolder: "/personal/"},
+	}
+
+	if err := copyGroupMirrorFile(context.Background(), "brain", task); err != nil {
+		t.Fatalf("copyGroupMirrorFile: %v", err)
+	}
+
+	recorded, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read recorded rsync args: %v", err)
+	}
+	args := strings.Split(strings.TrimSpace(string(recorded)), "\n")
+	want := []string{"-a", "-s", "/personal/PINKY/brain2/40000/i00025.avi", "pinky:/personal/PINKY/brain2/40000/i00025.avi"}
+	if len(args) != len(want) {
+		t.Fatalf("rsync args = %q, want %q", args, want)
+	}
+	for i, arg := range args {
+		if arg != want[i] {
+			t.Fatalf("rsync arg %d = %q, want %q (full: %q)", i, arg, want[i], args)
+		}
+	}
+}

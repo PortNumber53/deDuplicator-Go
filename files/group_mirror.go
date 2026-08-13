@@ -549,7 +549,10 @@ func copyGroupMirrorFile(ctx context.Context, localHost string, task groupMirror
 }
 
 func runGroupMirrorRsync(ctx context.Context, source, destination string) error {
-	cmd := exec.CommandContext(ctx, "rsync", "-a", source, destination)
+	// -s (--secluded-args/--protect-args) sends remote paths to the far side
+	// verbatim instead of through a remote shell, so paths need no quoting and
+	// spaces or glob characters in them stay intact.
+	cmd := exec.CommandContext(ctx, "rsync", "-a", "-s", source, destination)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("rsync failed: %v %s", err, strings.TrimSpace(string(output)))
@@ -601,11 +604,16 @@ func recordGroupMirrorCopy(ctx context.Context, database *sql.DB, task groupMirr
 	return nil
 }
 
+// groupMirrorRsyncEndpoint builds an rsync path. Remote paths are passed
+// unquoted: runGroupMirrorRsync uses -s, so rsync hands the path to the remote
+// rsync directly and a shell never sees it. Quoting here would be taken as part
+// of the file name and turn an absolute path into one relative to the home
+// directory.
 func groupMirrorRsyncEndpoint(localHost string, member groupMember, absPath string) string {
 	if groupMirrorIsLocal(localHost, member) {
 		return absPath
 	}
-	return member.Hostname + ":" + shellEscape(absPath)
+	return member.Hostname + ":" + absPath
 }
 
 func groupMirrorIsLocal(localHost string, member groupMember) bool {
