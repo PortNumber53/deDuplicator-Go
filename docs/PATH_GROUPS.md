@@ -121,6 +121,13 @@ file it:
    `mirror-group`).
 3. Removes every remaining copy.
 
+New copies are placed at the relative path chosen the same way `mirror-group`
+chooses it: the path that already has the most copies of that hash, with ties
+resolved in favour of the member with the most indexed files. The copy is
+transferred from a copy the run is keeping whenever one sits at that path, so
+both commands agree on where a copy belongs instead of propagating whichever
+nested path a single host happens to use.
+
 A second copy on the same host is only kept when the group has fewer hosts than
 the target copy count. For example, a group whose three member paths live on
 Brain, PI4, and Pinky ends up with three copies on three different hosts,
@@ -132,6 +139,10 @@ is the number of member paths in the group; use `--respect-limits` to apply the
 stored `min_copies` and `max_copies` values instead. When `max_copies` is lower
 than the number of hosts, only the highest-priority hosts are covered and copies
 on the remaining hosts are removed. The last copy of a file is never removed.
+
+The run summary reports both sides of the ledger — the bytes written by new
+copies and the bytes reclaimed by removals — along with the net change, which is
+negative when filling in missing hosts costs more space than the removals free.
 
 Removals for a file are held back until all of its missing copies exist, so a
 failed transfer leaves the existing copies in place. Files that have only one

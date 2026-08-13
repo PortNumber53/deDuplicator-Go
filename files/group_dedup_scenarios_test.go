@@ -20,6 +20,7 @@ type scenarioGroupMember struct {
 	FriendlyPath string
 	RootFolder   string
 	Priority     int
+	FileCount    int64
 }
 
 type scenarioFileCopy struct {
@@ -51,6 +52,13 @@ func expectGroupDedupeSetup(mock sqlmock.Sqlmock, groupName string, minCopies in
 			WithArgs(member.HostName).
 			WillReturnRows(sqlmock.NewRows([]string{"id", "name", "hostname", "ip", "root_path", "settings", "created_at"}).
 				AddRow(i+1, member.HostName, member.Hostname, "", "", []byte(settings), time.Now()))
+	}
+
+	// Indexed file counts break ties when the relative path for a new copy is chosen.
+	for _, member := range members {
+		mock.ExpectQuery("SELECT COUNT\\(\\*\\)\\s+FROM files").
+			WithArgs(member.Hostname, member.RootFolder).
+			WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(member.FileCount))
 	}
 }
 
@@ -106,9 +114,9 @@ func requireContains(t *testing.T, output string, wants ...string) {
 
 func familyScenarioMembers() []scenarioGroupMember {
 	return []scenarioGroupMember{
-		{HostName: "Brain", Hostname: "brain", FriendlyPath: "Personal", RootFolder: "/brain/personal", Priority: 100},
-		{HostName: "PI4", Hostname: "pi4", FriendlyPath: "BKP_Media", RootFolder: "/pi4/bkp", Priority: 100},
-		{HostName: "Pinky", Hostname: "pinky", FriendlyPath: "Personal", RootFolder: "/pinky/personal", Priority: 100},
+		{HostName: "Brain", Hostname: "brain", FriendlyPath: "Personal", RootFolder: "/brain/personal", Priority: 100, FileCount: 900},
+		{HostName: "PI4", Hostname: "pi4", FriendlyPath: "BKP_Media", RootFolder: "/pi4/bkp", Priority: 100, FileCount: 500},
+		{HostName: "Pinky", Hostname: "pinky", FriendlyPath: "Personal", RootFolder: "/pinky/personal", Priority: 100, FileCount: 100},
 	}
 }
 
@@ -156,10 +164,14 @@ func TestDedupeGroupPlansOneCopyPerHostAcrossThreeHosts(t *testing.T) {
 		"- Brain:Personal/PINKY/brain2/i00025.avi",
 		"- PI4:BKP_Media/pinky2/recover/i00025.avi",
 		"Would create 1 missing copies:",
-		"- Brain:Personal/PINKY/brain2/i00025.avi -> Pinky:Personal/PINKY/brain2/i00025.avi",
+		// The new copy uses the relative path that already has the most copies,
+		// sourced from a copy this run keeps, exactly as mirror-group would.
+		"- PI4:BKP_Media/pinky2/recover/i00025.avi -> Pinky:Personal/pinky2/recover/i00025.avi",
 		"Would remove 2 copies:",
 		"- Brain:Personal/i/precover3/i00025.avi",
 		"- Brain:Personal/pinky2/recover/i00025.avi",
+		fmt.Sprintf("Dry run: Would create 1 copies (%s), remove 2 files (%s), net %s freed",
+			formatBytes(size), formatBytes(2*size), formatBytes(size)),
 	)
 	if strings.Contains(output, "Would remove 2 copies:\n  - PI4") {
 		t.Fatalf("the only PI4 copy must be kept:\n%s", output)
@@ -210,6 +222,8 @@ func TestDedupeGroupReplicatesWhenEveryCopyIsOnOneHost(t *testing.T) {
 		"-> Pinky:Personal/archive/i00026.mov",
 		"Would remove 1 copies:",
 		"- Brain:Personal/zfs_fast/i00026.mov",
-		"Dry run: Would create 2 missing copies, remove 1 files",
+		// Two new copies cost more space than the single removal reclaims.
+		fmt.Sprintf("Dry run: Would create 2 copies (%s), remove 1 files (%s), net %s added",
+			formatBytes(2*size), formatBytes(size), formatBytes(size)),
 	)
 }

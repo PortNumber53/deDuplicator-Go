@@ -55,6 +55,30 @@ type groupDedupePlan struct {
 	Remove    []FileLocation
 }
 
+// groupDedupeTotals tallies what a run created and removed. Copies written to
+// hosts that were missing a file offset the space reclaimed by the removals.
+type groupDedupeTotals struct {
+	Copied       int
+	CopiedBytes  int64
+	Removed      int
+	RemovedBytes int64
+}
+
+func (t *groupDedupeTotals) add(other groupDedupeTotals) {
+	t.Copied += other.Copied
+	t.CopiedBytes += other.CopiedBytes
+	t.Removed += other.Removed
+	t.RemovedBytes += other.RemovedBytes
+}
+
+func formatGroupDedupeNet(totals groupDedupeTotals) string {
+	net := totals.RemovedBytes - totals.CopiedBytes
+	if net < 0 {
+		return fmt.Sprintf("net %s added", formatBytes(-net))
+	}
+	return fmt.Sprintf("net %s freed", formatBytes(net))
+}
+
 // DeduplicateByGroup performs group-aware deduplication across multiple hosts
 func DeduplicateByGroup(ctx context.Context, database *sql.DB, opts GroupDedupeOptions) error {
 	// Get path group configuration
@@ -63,11 +87,16 @@ func DeduplicateByGroup(ctx context.Context, database *sql.DB, opts GroupDedupeO
 		return fmt.Errorf("error getting path group: %v", err)
 	}
 
-	// Get all members of the group, resolved to concrete hosts and root folders
-	members, err := resolveGroupMembers(database, opts.GroupName)
+	// Get all members of the group, resolved to concrete hosts and root folders.
+	// The indexed file counts are what mirror-group uses to break ties when it
+	// picks the relative path for a new copy; group deduplication picks the same
+	// path so both commands agree on where a copy belongs.
+	membersResolved := time.Now()
+	members, err := resolveGroupMirrorMembers(ctx, database, opts.GroupName)
 	if err != nil {
 		return err
 	}
+	memberResolutionTime := time.Since(membersResolved)
 
 	if len(members) == 0 {
 		return fmt.Errorf("path group '%s' has no members", opts.GroupName)
@@ -92,9 +121,10 @@ func DeduplicateByGroup(ctx context.Context, database *sql.DB, opts GroupDedupeO
 		group.MinCopies, formatMaxCopies(group.MaxCopies), opts.RespectLimits)
 	groupDedupeVerbosef(opts, "Mode=%s, balance_mode=%s, min_size=%s bytes, count_limit=%s",
 		groupDedupeMode(opts), opts.BalanceMode, formatBytes(opts.MinSize), formatGroupDedupeCountLimit(opts.Count))
+	groupDedupeVerbosef(opts, "Resolved %d member paths in %s", len(members), memberResolutionTime.Round(time.Millisecond))
 	for i, member := range members {
-		groupDedupeVerbosef(opts, "Member %d/%d: %s:%s -> %s (priority=%d)",
-			i+1, len(members), member.HostName, member.FriendlyPath, member.RootFolder, member.Priority)
+		groupDedupeVerbosef(opts, "Member %d/%d: %s:%s -> %s (priority=%d, indexed files=%d)",
+			i+1, len(members), member.HostName, member.FriendlyPath, member.RootFolder, member.Priority, member.FileCount)
 	}
 
 	// Find duplicates across all hosts in the group
@@ -111,16 +141,12 @@ func DeduplicateByGroup(ctx context.Context, database *sql.DB, opts GroupDedupeO
 	fmt.Printf("Found %d duplicate file groups\n\n", len(duplicates))
 
 	// Process each duplicate group
-	totalRemoved := 0
-	totalCopied := 0
-	totalSaved := int64(0)
+	totals := groupDedupeTotals{}
 	failedGroups := 0
 
 	for _, dupGroup := range duplicates {
-		copied, removed, saved, err := processGroupDuplicates(ctx, database, dupGroup, members, targetCopies, opts)
-		totalCopied += copied
-		totalRemoved += removed
-		totalSaved += saved
+		hashTotals, err := processGroupDuplicates(ctx, database, dupGroup, members, targetCopies, opts)
+		totals.add(hashTotals)
 		if err != nil {
 			logging.ErrorLogger.Printf("Error processing hash %s: %v", dupGroup[0].Hash, err)
 			failedGroups++
@@ -129,9 +155,15 @@ func DeduplicateByGroup(ctx context.Context, database *sql.DB, opts GroupDedupeO
 	}
 
 	if opts.DryRun {
-		fmt.Printf("\nDry run: Would create %d missing copies, remove %d files, saving %s\n", totalCopied, totalRemoved, formatBytes(totalSaved))
+		fmt.Printf("\nDry run: Would create %d copies (%s), remove %d files (%s), %s\n",
+			totals.Copied, formatBytes(totals.CopiedBytes),
+			totals.Removed, formatBytes(totals.RemovedBytes),
+			formatGroupDedupeNet(totals))
 	} else {
-		fmt.Printf("\nCreated %d missing copies, removed %d files, saved %s\n", totalCopied, totalRemoved, formatBytes(totalSaved))
+		fmt.Printf("\nCreated %d copies (%s), removed %d files (%s), %s\n",
+			totals.Copied, formatBytes(totals.CopiedBytes),
+			totals.Removed, formatBytes(totals.RemovedBytes),
+			formatGroupDedupeNet(totals))
 	}
 	if failedGroups > 0 {
 		return fmt.Errorf("failed to process %d duplicate file groups; see error log for details", failedGroups)
@@ -355,9 +387,10 @@ func groupDedupeScopeKey(hostname, rootFolder string) string {
 // processGroupDuplicates processes a group of duplicate files: it keeps one copy
 // per group host, creates the copies that are missing on other group hosts, and
 // removes everything above that.
-func processGroupDuplicates(ctx context.Context, database *sql.DB, locations []FileLocation, members []groupMember, targetCopies int, opts GroupDedupeOptions) (int, int, int64, error) {
+func processGroupDuplicates(ctx context.Context, database *sql.DB, locations []FileLocation, members []groupMember, targetCopies int, opts GroupDedupeOptions) (groupDedupeTotals, error) {
+	totals := groupDedupeTotals{}
 	if len(locations) == 0 {
-		return 0, 0, 0, nil
+		return totals, nil
 	}
 
 	fmt.Printf("Hash: %s (size: %s, copies: %d)\n", locations[0].Hash, formatBytes(locations[0].Size), len(locations))
@@ -377,14 +410,13 @@ func processGroupDuplicates(ctx context.Context, database *sql.DB, locations []F
 
 	if !opts.DryRun {
 		if err := verifyGroupKeepers(ctx, toKeep); err != nil {
-			return 0, 0, 0, err
+			return totals, err
 		}
 	}
 
 	// Fill in the hosts that do not have this file yet. Removals are held back
 	// until every missing copy exists, so a failed transfer never reduces the
 	// number of copies below the copies already on disk.
-	copied := 0
 	if len(plan.Replicate) > 0 {
 		if opts.DryRun {
 			fmt.Printf("  Would create %d missing copies:\n", len(plan.Replicate))
@@ -393,7 +425,10 @@ func processGroupDuplicates(ctx context.Context, database *sql.DB, locations []F
 					task.Source.HostName, task.Source.FriendlyPath, task.Source.Path,
 					task.DstMember.HostName, task.DstMember.FriendlyPath, task.RelPath)
 			}
-			copied = len(plan.Replicate)
+			totals.Copied = len(plan.Replicate)
+			for _, task := range plan.Replicate {
+				totals.CopiedBytes += task.Source.Size
+			}
 		} else {
 			fmt.Printf("  Creating %d missing copies:\n", len(plan.Replicate))
 			for _, task := range plan.Replicate {
@@ -402,21 +437,20 @@ func processGroupDuplicates(ctx context.Context, database *sql.DB, locations []F
 					task.DstMember.HostName, task.DstMember.FriendlyPath, task.RelPath)
 				created, err := replicateGroupCopy(ctx, database, task)
 				if err != nil {
-					return copied, 0, 0, fmt.Errorf("keeping all copies because %s:%s/%s could not be created: %v",
+					return totals, fmt.Errorf("keeping all copies because %s:%s/%s could not be created: %v",
 						task.DstMember.HostName, task.DstMember.FriendlyPath, task.RelPath, err)
 				}
-				copied++
+				totals.Copied++
+				totals.CopiedBytes += created.Size
 				toKeep = append(toKeep, created)
 				if err := verifyGroupKeepers(ctx, []FileLocation{created}); err != nil {
-					return copied, 0, 0, err
+					return totals, err
 				}
 			}
 		}
 	}
 
 	// Display and process removals
-	removed := 0
-	saved := int64(0)
 	failed := 0
 
 	if len(toRemove) > 0 {
@@ -455,16 +489,16 @@ func processGroupDuplicates(ctx context.Context, database *sql.DB, locations []F
 				}
 			}
 
-			removed++
-			saved += loc.Size
+			totals.Removed++
+			totals.RemovedBytes += loc.Size
 		}
 	}
 
 	fmt.Println()
 	if failed > 0 {
-		return copied, removed, saved, fmt.Errorf("failed to remove %d duplicate copies", failed)
+		return totals, fmt.Errorf("failed to remove %d duplicate copies", failed)
 	}
-	return copied, removed, saved, nil
+	return totals, nil
 }
 
 // planGroupDuplicateLocations keeps exactly one copy per group host, schedules a
@@ -537,7 +571,7 @@ func planGroupDuplicateLocations(locations []FileLocation, members []groupMember
 		}
 	}
 
-	source := ordered[sourceIndex]
+	source := chooseGroupDedupeSource(ordered, selected, members, ordered[sourceIndex])
 	if source.MemberIndex >= 0 && source.MemberIndex < len(members) {
 		for _, hostKey := range coverage {
 			if covered[hostKey] {
@@ -590,6 +624,49 @@ func planGroupDuplicateLocations(locations []FileLocation, members []groupMember
 	return plan
 }
 
+// chooseGroupDedupeSource picks the copy that new copies are made from. The
+// relative path is chosen exactly as mirror-group chooses it — the path that
+// already has the most copies, then the member with the most indexed files —
+// so both commands put a copy of a hash at the same place instead of spreading
+// it over the nested paths a single host happens to use. Among the copies at
+// that path, one that this run keeps is preferred over one it is about to
+// remove.
+func chooseGroupDedupeSource(ordered []FileLocation, selected []bool, members []groupMember, fallback FileLocation) FileLocation {
+	mirrorLocations := make([]groupMirrorLocation, 0, len(ordered))
+	for _, loc := range ordered {
+		if loc.MemberIndex < 0 || loc.MemberIndex >= len(members) {
+			continue
+		}
+		mirrorLocations = append(mirrorLocations, groupMirrorLocation{
+			Hash:        loc.Hash,
+			Path:        loc.Path,
+			Size:        loc.Size,
+			MemberIndex: loc.MemberIndex,
+		})
+	}
+
+	relPath, ok := chooseGroupMirrorPath(mirrorLocations, members)
+	if !ok {
+		return fallback
+	}
+
+	candidate := fallback
+	found := false
+	for i, loc := range ordered {
+		if loc.Path != relPath {
+			continue
+		}
+		if selected[i] {
+			return loc
+		}
+		if !found {
+			candidate = loc
+			found = true
+		}
+	}
+	return candidate
+}
+
 // replicateGroupCopy creates one missing copy on a group host and indexes it,
 // reusing the mirror-group transfer path.
 func replicateGroupCopy(ctx context.Context, database *sql.DB, task groupDedupeReplication) (FileLocation, error) {
@@ -599,10 +676,15 @@ func replicateGroupCopy(ctx context.Context, database *sql.DB, task groupDedupeR
 	}
 	localHost = strings.ToLower(localHost)
 
+	relPath, err := cleanGroupMirrorRelPath(task.RelPath)
+	if err != nil {
+		return FileLocation{}, err
+	}
+
 	mirrorTask := groupMirrorTask{
 		Hash:      task.Source.Hash,
 		Size:      task.Source.Size,
-		RelPath:   task.RelPath,
+		RelPath:   relPath,
 		SrcMember: task.SrcMember,
 		DstMember: task.DstMember,
 	}
@@ -615,7 +697,7 @@ func replicateGroupCopy(ctx context.Context, database *sql.DB, task groupDedupeR
 		return FileLocation{}, fmt.Errorf("destination path is already indexed under root_folder %s with hash %s", conflictRoot, conflictHash)
 	}
 
-	dstAbs := filepath.Join(task.DstMember.RootFolder, task.RelPath)
+	dstAbs := filepath.Join(task.DstMember.RootFolder, relPath)
 	exists, err := groupMirrorFileExists(ctx, localHost, task.DstMember, dstAbs)
 	if err != nil {
 		return FileLocation{}, err
@@ -636,7 +718,7 @@ func replicateGroupCopy(ctx context.Context, database *sql.DB, task groupDedupeR
 
 	return FileLocation{
 		Hash:         task.Source.Hash,
-		Path:         task.RelPath,
+		Path:         relPath,
 		Hostname:     task.DstMember.Hostname,
 		HostName:     task.DstMember.HostName,
 		FriendlyPath: task.DstMember.FriendlyPath,

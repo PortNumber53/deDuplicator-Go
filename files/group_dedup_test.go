@@ -75,9 +75,9 @@ func TestEffectiveGroupCopyLimitsUsesStoredLimitsWhenRequested(t *testing.T) {
 // familyGroupMembers mirrors a three-host group: Brain, PI4, and Pinky.
 func familyGroupMembers() []groupMember {
 	return []groupMember{
-		{Index: 0, HostName: "Brain", Hostname: "brain", FriendlyPath: "Personal", RootFolder: "/brain/personal", Priority: 100},
-		{Index: 1, HostName: "PI4", Hostname: "pi4", FriendlyPath: "BKP_Media", RootFolder: "/pi4/bkp", Priority: 100},
-		{Index: 2, HostName: "Pinky", Hostname: "pinky", FriendlyPath: "Personal", RootFolder: "/pinky/personal", Priority: 100},
+		{Index: 0, HostName: "Brain", Hostname: "brain", FriendlyPath: "Personal", RootFolder: "/brain/personal", Priority: 100, FileCount: 900},
+		{Index: 1, HostName: "PI4", Hostname: "pi4", FriendlyPath: "BKP_Media", RootFolder: "/pi4/bkp", Priority: 100, FileCount: 500},
+		{Index: 2, HostName: "Pinky", Hostname: "pinky", FriendlyPath: "Personal", RootFolder: "/pinky/personal", Priority: 100, FileCount: 100},
 	}
 }
 
@@ -312,5 +312,56 @@ func TestRemoveGroupFileRefusesChangedSize(t *testing.T) {
 	}
 	if _, err := os.Stat(fullPath); err != nil {
 		t.Fatalf("file should remain after refused removal: %v", err)
+	}
+}
+
+// New copies go to the relative path that already has the most copies, the same
+// rule mirror-group applies, instead of the keeper's own path.
+func TestPlanGroupDuplicateLocationsReplicatesToTheMostCommonPath(t *testing.T) {
+	members := familyGroupMembers()
+	locations := []FileLocation{
+		{HostName: "Brain", Hostname: "brain", FriendlyPath: "Personal", Path: "PINKY/brain2/deep/file.mov", Priority: 100, MemberIndex: 0},
+		{HostName: "Brain", Hostname: "brain", FriendlyPath: "Personal", Path: "shared/file.mov", Priority: 100, MemberIndex: 0},
+		{HostName: "PI4", Hostname: "pi4", FriendlyPath: "BKP_Media", Path: "shared/file.mov", Priority: 100, MemberIndex: 1},
+	}
+
+	plan := planGroupDuplicateLocations(locations, members, 3)
+
+	if len(plan.Replicate) != 1 {
+		t.Fatalf("replication tasks = %d; want 1", len(plan.Replicate))
+	}
+	task := plan.Replicate[0]
+	if task.RelPath != "shared/file.mov" {
+		t.Fatalf("replication path = %s; want the path with the most copies", task.RelPath)
+	}
+	// The Brain copy at that path is being removed, so the kept PI4 copy is the source.
+	if task.SrcMember.HostName != "PI4" || task.Source.Path != "shared/file.mov" {
+		t.Fatalf("replication source = %s:%s; want the kept PI4 copy", task.SrcMember.HostName, task.Source.Path)
+	}
+	if task.DstMember.HostName != "Pinky" {
+		t.Fatalf("replication destination = %s; want Pinky", task.DstMember.HostName)
+	}
+	if len(plan.Keep) != 2 || len(plan.Remove) != 1 || plan.Remove[0].Path != "shared/file.mov" {
+		t.Fatalf("plan = %+v; want the deep Brain copy and the PI4 copy kept", plan)
+	}
+}
+
+// When each candidate path has the same number of copies, the member with the
+// most indexed files wins, matching mirror-group's tie-break.
+func TestPlanGroupDuplicateLocationsBreaksPathTiesOnIndexedFileCount(t *testing.T) {
+	members := familyGroupMembers()
+	locations := []FileLocation{
+		{HostName: "Brain", Hostname: "brain", FriendlyPath: "Personal", Path: "zeta/file.mov", Priority: 100, MemberIndex: 0},
+		{HostName: "PI4", Hostname: "pi4", FriendlyPath: "BKP_Media", Path: "alpha/file.mov", Priority: 100, MemberIndex: 1},
+	}
+
+	plan := planGroupDuplicateLocations(locations, members, 3)
+
+	if len(plan.Replicate) != 1 {
+		t.Fatalf("replication tasks = %d; want 1", len(plan.Replicate))
+	}
+	if plan.Replicate[0].RelPath != "zeta/file.mov" {
+		t.Fatalf("replication path = %s; want Brain's path, since Brain indexes the most files",
+			plan.Replicate[0].RelPath)
 	}
 }
