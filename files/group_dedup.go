@@ -127,31 +127,56 @@ func DeduplicateByGroup(ctx context.Context, database *sql.DB, opts GroupDedupeO
 			i+1, len(members), member.HostName, member.FriendlyPath, member.RootFolder, member.Priority, member.FileCount)
 	}
 
-	// Find duplicates across all hosts in the group
-	duplicates, err := findGroupDuplicates(ctx, database, members, opts)
+	// List the hashes that have more than one copy in the group. Only the
+	// hash/size pairs are collected up front; the locations of each hash are
+	// loaded and acted on one hash at a time below.
+	candidates, err := findGroupDuplicateCandidates(ctx, database, members, opts)
 	if err != nil {
 		return fmt.Errorf("error finding duplicates: %v", err)
 	}
 
-	if len(duplicates) == 0 {
+	if len(candidates) == 0 {
 		fmt.Println("No duplicates found in this group.")
 		return nil
 	}
 
-	fmt.Printf("Found %d duplicate file groups\n\n", len(duplicates))
+	fmt.Printf("Found %d duplicate file groups\n\n", len(candidates))
 
-	// Process each duplicate group
+	// Process each hash as it is analyzed: load its locations, decide what to
+	// keep, copy, and remove, and carry that out before looking at the next
+	// hash. Nothing is buffered between analysis and action.
 	totals := groupDedupeTotals{}
 	failedGroups := 0
+	processedGroups := 0
 
-	for _, dupGroup := range duplicates {
-		hashTotals, err := processGroupDuplicates(ctx, database, dupGroup, members, targetCopies, opts)
-		totals.add(hashTotals)
+	for i, candidate := range candidates {
+		groupDedupeVerbosef(opts, "Loading locations for candidate %d/%d: hash=%s size=%s bytes",
+			i+1, len(candidates), candidate.Hash, formatBytes(candidate.Size))
+		locations, err := getFileLocationsForHash(ctx, database, candidate.Hash, candidate.Size, members, opts)
 		if err != nil {
-			logging.ErrorLogger.Printf("Error processing hash %s: %v", dupGroup[0].Hash, err)
+			logging.ErrorLogger.Printf("Error loading locations for hash %s: %v", candidate.Hash, err)
 			failedGroups++
 			continue
 		}
+		groupDedupeVerbosef(opts, "Candidate %d/%d has %d matching locations in the group",
+			i+1, len(candidates), len(locations))
+		if len(locations) <= 1 {
+			continue
+		}
+
+		processedGroups++
+		hashTotals, err := processGroupDuplicates(ctx, database, locations, members, targetCopies, opts)
+		totals.add(hashTotals)
+		if err != nil {
+			logging.ErrorLogger.Printf("Error processing hash %s: %v", candidate.Hash, err)
+			failedGroups++
+			continue
+		}
+	}
+
+	if processedGroups == 0 && failedGroups == 0 {
+		fmt.Println("No duplicates found in this group.")
+		return nil
 	}
 
 	if opts.DryRun {
@@ -232,8 +257,18 @@ func formatGroupDedupeCountLimit(count int) string {
 	return fmt.Sprintf("%d", count)
 }
 
-// findGroupDuplicates finds all duplicate files across hosts in a path group
-func findGroupDuplicates(ctx context.Context, database *sql.DB, members []groupMember, opts GroupDedupeOptions) ([][]FileLocation, error) {
+// groupDuplicateCandidate is a hash/size pair that has more than one copy
+// somewhere in the group. Its locations are loaded when the hash is processed.
+type groupDuplicateCandidate struct {
+	Hash string
+	Size int64
+}
+
+// findGroupDuplicateCandidates lists the hash/size pairs that have more than one
+// copy across the hosts in a path group. It deliberately does not load the file
+// locations: the caller loads those one hash at a time so each hash is analyzed
+// and acted on before the next one is looked at.
+func findGroupDuplicateCandidates(ctx context.Context, database *sql.DB, members []groupMember, opts GroupDedupeOptions) ([]groupDuplicateCandidate, error) {
 	// Build query to find files across all group members
 	query := `
 		WITH group_files AS (
@@ -291,20 +326,15 @@ func findGroupDuplicates(ctx context.Context, database *sql.DB, members []groupM
 	}
 	defer rows.Close()
 
-	type duplicateKey struct {
-		hash string
-		size int64
-	}
-	var duplicates []duplicateKey
+	var duplicates []groupDuplicateCandidate
 	for rows.Next() {
-		var hash string
-		var size int64
+		var candidate groupDuplicateCandidate
 		var count int
 		var totalSize int64
-		if err := rows.Scan(&hash, &size, &count, &totalSize); err != nil {
+		if err := rows.Scan(&candidate.Hash, &candidate.Size, &count, &totalSize); err != nil {
 			return nil, err
 		}
-		duplicates = append(duplicates, duplicateKey{hash: hash, size: size})
+		duplicates = append(duplicates, candidate)
 	}
 
 	if err := rows.Err(); err != nil {
@@ -313,23 +343,7 @@ func findGroupDuplicates(ctx context.Context, database *sql.DB, members []groupM
 	groupDedupeVerbosef(opts, "Duplicate candidate query completed in %s: %d candidate groups",
 		time.Since(queryStarted).Round(time.Millisecond), len(duplicates))
 
-	// Now get all file locations for each duplicate hash/size pair.
-	var result [][]FileLocation
-	for i, duplicate := range duplicates {
-		groupDedupeVerbosef(opts, "Loading locations for candidate %d/%d: hash=%s size=%s bytes",
-			i+1, len(duplicates), duplicate.hash, formatBytes(duplicate.size))
-		locations, err := getFileLocationsForHash(ctx, database, duplicate.hash, duplicate.size, members, opts)
-		if err != nil {
-			return nil, err
-		}
-		groupDedupeVerbosef(opts, "Candidate %d/%d has %d matching locations in the group",
-			i+1, len(duplicates), len(locations))
-		if len(locations) > 1 {
-			result = append(result, locations)
-		}
-	}
-
-	return result, nil
+	return duplicates, nil
 }
 
 // getFileLocationsForHash gets all file locations for a specific hash and size within the group.
