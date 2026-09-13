@@ -154,6 +154,13 @@ candidate and location queries begin, how long they take, and how many rows are
 selected for processing. This is useful for long-running searches on large
 file indexes.
 
+Duplicate candidates are processed by their oldest `files.updated_at` value,
+with files that have never been visited first. After a successful non-dry-run
+check, every remaining copy for that hash and size in the group receives a new
+timestamp even when no copy or removal was needed. This makes repeated
+`--count` runs rotate through the eligible files instead of repeatedly starting
+with the same large hashes. Dry runs do not change timestamps.
+
 ## Mirroring Command
 
 ```bash
@@ -167,6 +174,12 @@ to create a missing copy and existing copies use different relative paths, it
 chooses the relative path that already has the most copies for that hash. Ties
 are resolved by using the path from the group member with the most indexed
 files, reducing unnecessary folder/path proliferation.
+
+Mirroring uses the same traversal timestamps: hashes with an unvisited file are
+considered first, followed by the least recently visited hashes. A successful
+non-dry-run refreshes the timestamp for each hash even when all member paths
+already contain a copy. Apply migration `000006_add_updated_at_to_files` before
+using these commands with an existing database.
 
 ## How It Works
 

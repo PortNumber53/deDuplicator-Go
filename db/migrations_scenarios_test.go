@@ -24,8 +24,8 @@ func TestMigrateDatabaseAppliesPendingFiles(t *testing.T) {
 
 	mock.ExpectExec(`CREATE TABLE IF NOT EXISTS migrations`).WillReturnResult(sqlmock.NewResult(0, 1))
 
-	// Five .up.sql files exist in migrations/ (including 000005_add_path_groups.up.sql)
-	for i := 0; i < 5; i++ {
+	// Six .up.sql files exist in migrations/ (including the files.updated_at migration).
+	for i := 0; i < 6; i++ {
 		mock.ExpectQuery(`SELECT EXISTS`).WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
 		mock.ExpectBegin()
 		mock.ExpectExec(`(?s).*`).WillReturnResult(sqlmock.NewResult(0, 1))

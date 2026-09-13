@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -69,7 +70,7 @@ func expectGroupDedupeDuplicates(mock sqlmock.Sqlmock, members []scenarioGroupMe
 	for _, member := range members {
 		scopeArgs = append(scopeArgs, member.Hostname, member.RootFolder)
 	}
-	mock.ExpectQuery("HAVING COUNT\\(\\*\\) > 1").
+	mock.ExpectQuery("HAVING COUNT\\(\\*\\) > 1\\s+ORDER BY CASE WHEN COUNT\\(updated_at\\) < COUNT\\(\\*\\) THEN 0 ELSE 1 END,\\s+MIN\\(updated_at\\) ASC NULLS FIRST, total_size DESC, hash, size").
 		WithArgs(scopeArgs...).
 		WillReturnRows(sqlmock.NewRows([]string{"hash", "size", "count", "total_size"}).
 			AddRow(hash, size, len(copies), size*int64(len(copies))))
@@ -81,6 +82,56 @@ func expectGroupDedupeDuplicates(mock sqlmock.Sqlmock, members []scenarioGroupMe
 	mock.ExpectQuery("WHERE f.hash = \\$1").
 		WithArgs(hash, size).
 		WillReturnRows(locationRows)
+}
+
+// A successful run refreshes traversal timestamps even when the copies are
+// already balanced and no filesystem or hash data changes are needed.
+func TestDedupeGroupTouchesBalancedHashWithoutFileChanges(t *testing.T) {
+	database, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer database.Close()
+
+	localHost, err := os.Hostname()
+	if err != nil {
+		t.Fatalf("hostname: %v", err)
+	}
+	localRoot := t.TempDir()
+	const (
+		hash = "balanced-hash"
+		size = int64(5)
+	)
+	if err := os.WriteFile(filepath.Join(localRoot, "same.bin"), []byte("12345"), 0644); err != nil {
+		t.Fatalf("write local keeper: %v", err)
+	}
+
+	members := []scenarioGroupMember{
+		{HostName: "Local", Hostname: localHost, FriendlyPath: "Data", RootFolder: localRoot, Priority: 100, FileCount: 1},
+		{HostName: "Remote", Hostname: "remote.example", FriendlyPath: "Backup", RootFolder: "/remote/backup", Priority: 100, FileCount: 1},
+	}
+	expectGroupDedupeSetup(mock, "balanced", 2, members)
+	expectGroupDedupeDuplicates(mock, members, hash, size, []scenarioFileCopy{
+		{Path: "same.bin", Hostname: localHost, RootFolder: localRoot},
+		{Path: "same.bin", Hostname: "remote.example", RootFolder: "/remote/backup"},
+	})
+	mock.ExpectExec(`(?s)UPDATE files SET updated_at = NOW\(\) WHERE hash = \$1 AND size = \$2 AND \(`).
+		WithArgs(hash, size, localHost, localRoot, "remote.example", "/remote/backup").
+		WillReturnResult(sqlmock.NewResult(0, 2))
+
+	stubDir := t.TempDir()
+	writeStub(t, stubDir, "ssh", "#!/bin/sh\nexit 0\n")
+	t.Setenv("PATH", stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	if err := DeduplicateByGroup(context.Background(), database, GroupDedupeOptions{
+		GroupName:   "balanced",
+		BalanceMode: "priority",
+	}); err != nil {
+		t.Fatalf("DeduplicateByGroup: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
 }
 
 func captureStdout(t *testing.T, run func()) string {

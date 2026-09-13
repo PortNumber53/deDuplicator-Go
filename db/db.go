@@ -102,6 +102,7 @@ func CreateDatabase(db *sql.DB, force bool) error {
 			hash TEXT,
 			size BIGINT,
 			last_hashed_at TIMESTAMP,
+			updated_at TIMESTAMP,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			UNIQUE(path, hostname),
 			FOREIGN KEY (hostname) REFERENCES hosts(hostname)

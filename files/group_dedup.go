@@ -161,6 +161,12 @@ func DeduplicateByGroup(ctx context.Context, database *sql.DB, opts GroupDedupeO
 		groupDedupeVerbosef(opts, "Candidate %d/%d has %d matching locations in the group",
 			i+1, len(candidates), len(locations))
 		if len(locations) <= 1 {
+			if !opts.DryRun {
+				if err := touchGroupHash(ctx, database, candidate.Hash, &candidate.Size, members); err != nil {
+					logging.ErrorLogger.Printf("Error updating traversal timestamp for hash %s: %v", candidate.Hash, err)
+					failedGroups++
+				}
+			}
 			continue
 		}
 
@@ -171,6 +177,13 @@ func DeduplicateByGroup(ctx context.Context, database *sql.DB, opts GroupDedupeO
 			logging.ErrorLogger.Printf("Error processing hash %s: %v", candidate.Hash, err)
 			failedGroups++
 			continue
+		}
+		if !opts.DryRun {
+			if err := touchGroupHash(ctx, database, candidate.Hash, &candidate.Size, members); err != nil {
+				logging.ErrorLogger.Printf("Error updating traversal timestamp for hash %s: %v", candidate.Hash, err)
+				failedGroups++
+				continue
+			}
 		}
 	}
 
@@ -272,7 +285,7 @@ func findGroupDuplicateCandidates(ctx context.Context, database *sql.DB, members
 	// Build query to find files across all group members
 	query := `
 		WITH group_files AS (
-			SELECT f.hash, f.size
+			SELECT f.hash, f.size, f.updated_at
 			FROM files f
 			WHERE f.hash IS NOT NULL
 			AND f.hash NOT IN ('TIMEOUT_ERROR', 'HASH_ERROR')
@@ -309,7 +322,8 @@ func findGroupDuplicateCandidates(ctx context.Context, database *sql.DB, members
 		FROM group_files
 		GROUP BY hash, size
 		HAVING COUNT(*) > 1
-		ORDER BY total_size DESC, hash, size
+		ORDER BY CASE WHEN COUNT(updated_at) < COUNT(*) THEN 0 ELSE 1 END,
+			MIN(updated_at) ASC NULLS FIRST, total_size DESC, hash, size
 	`
 
 	if opts.Count > 0 {
@@ -344,6 +358,34 @@ func findGroupDuplicateCandidates(ctx context.Context, database *sql.DB, members
 		time.Since(queryStarted).Round(time.Millisecond), len(duplicates))
 
 	return duplicates, nil
+}
+
+// touchGroupHash records a successful traversal of the matching files in this
+// group. A nil size touches every row for the hash; dedupe supplies a size
+// because it treats equal hashes with conflicting sizes as separate candidates.
+func touchGroupHash(ctx context.Context, database *sql.DB, hash string, size *int64, members []groupMember) error {
+	query := `UPDATE files SET updated_at = NOW() WHERE hash = $1`
+	args := []interface{}{hash}
+	argCount := 1
+	if size != nil {
+		argCount++
+		query += fmt.Sprintf(" AND size = $%d", argCount)
+		args = append(args, *size)
+	}
+
+	query += " AND ("
+	for i, member := range members {
+		if i > 0 {
+			query += " OR "
+		}
+		query += fmt.Sprintf("(LOWER(hostname) = LOWER($%d) AND root_folder = $%d)", argCount+1, argCount+2)
+		args = append(args, member.Hostname, member.RootFolder)
+		argCount += 2
+	}
+	query += ")"
+
+	_, err := database.ExecContext(ctx, query, args...)
+	return err
 }
 
 // getFileLocationsForHash gets all file locations for a specific hash and size within the group.

@@ -39,6 +39,7 @@ type groupMirrorLocation struct {
 	Path        string
 	Size        int64
 	MemberIndex int
+	UpdatedAt   sql.NullTime
 }
 
 type groupMirrorTask struct {
@@ -170,6 +171,15 @@ func MirrorGroup(ctx context.Context, database *sql.DB, opts GroupMirrorOptions)
 		fmt.Printf("Copied %s -> %s: %s\n", groupMirrorMemberLabel(task.SrcMember), groupMirrorMemberLabel(task.DstMember), task.RelPath)
 	}
 
+	// A traversal is useful even when every copy was already in place. Touch
+	// every hash that was considered so the next run can prioritize files that
+	// have never been visited or have gone the longest without a visit.
+	for _, hash := range orderedGroupMirrorHashes(hashLocations) {
+		if err := touchGroupHash(ctx, database, hash, nil, members); err != nil {
+			return fmt.Errorf("error updating traversal timestamp for hash %s: %v", hash, err)
+		}
+	}
+
 	fmt.Printf("\nMirror-group summary: copied %d files", copied)
 	if len(conflicts) > 0 {
 		fmt.Printf(", %d conflicts/skips", len(conflicts))
@@ -257,14 +267,14 @@ func loadGroupMirrorHashes(ctx context.Context, database *sql.DB, members []grou
 	for _, member := range members {
 		memberPathHashes[member.Index] = make(map[string]string)
 		rows, err := database.QueryContext(ctx, `
-			SELECT path, hash, size
+			SELECT path, hash, size, updated_at
 			FROM files
 			WHERE LOWER(hostname) = LOWER($1)
 			AND root_folder = $2
 			AND hash IS NOT NULL
 			AND hash NOT IN ('TIMEOUT_ERROR', 'HASH_ERROR')
 			AND size IS NOT NULL
-			ORDER BY hash, path
+			ORDER BY updated_at ASC NULLS FIRST, hash, path
 		`, member.Hostname, member.RootFolder)
 		if err != nil {
 			return nil, nil, fmt.Errorf("error loading files for %s: %v", groupMirrorMemberLabel(member), err)
@@ -273,7 +283,8 @@ func loadGroupMirrorHashes(ctx context.Context, database *sql.DB, members []grou
 		for rows.Next() {
 			var path, hash string
 			var size int64
-			if err := rows.Scan(&path, &hash, &size); err != nil {
+			var updatedAt sql.NullTime
+			if err := rows.Scan(&path, &hash, &size, &updatedAt); err != nil {
 				rows.Close()
 				return nil, nil, fmt.Errorf("error scanning files for %s: %v", groupMirrorMemberLabel(member), err)
 			}
@@ -283,6 +294,7 @@ func loadGroupMirrorHashes(ctx context.Context, database *sql.DB, members []grou
 				Path:        path,
 				Size:        size,
 				MemberIndex: member.Index,
+				UpdatedAt:   updatedAt,
 			})
 		}
 		if err := rows.Err(); err != nil {
@@ -299,11 +311,7 @@ func planGroupMirrorTasks(hashLocations map[string][]groupMirrorLocation, member
 	var tasks []groupMirrorTask
 	var conflicts []groupMirrorConflict
 	plannedDestPaths := make(map[int]map[string]string, len(members))
-	hashes := make([]string, 0, len(hashLocations))
-	for hash := range hashLocations {
-		hashes = append(hashes, hash)
-	}
-	sort.Strings(hashes)
+	hashes := orderedGroupMirrorHashes(hashLocations)
 
 	for _, hash := range hashes {
 		locations := hashLocations[hash]
@@ -380,6 +388,47 @@ func planGroupMirrorTasks(hashLocations map[string][]groupMirrorLocation, member
 	}
 
 	return tasks, conflicts
+}
+
+// orderedGroupMirrorHashes puts hashes containing an unvisited file first,
+// followed by the hash whose oldest file was visited least recently. Stable
+// hash ordering makes ties deterministic.
+func orderedGroupMirrorHashes(hashLocations map[string][]groupMirrorLocation) []string {
+	type hashAge struct {
+		hash      string
+		updatedAt sql.NullTime
+	}
+
+	ages := make([]hashAge, 0, len(hashLocations))
+	for hash, locations := range hashLocations {
+		age := hashAge{hash: hash}
+		for _, loc := range locations {
+			if !loc.UpdatedAt.Valid {
+				age.updatedAt = sql.NullTime{}
+				break
+			}
+			if !age.updatedAt.Valid || loc.UpdatedAt.Time.Before(age.updatedAt.Time) {
+				age.updatedAt = loc.UpdatedAt
+			}
+		}
+		ages = append(ages, age)
+	}
+
+	sort.Slice(ages, func(i, j int) bool {
+		if ages[i].updatedAt.Valid != ages[j].updatedAt.Valid {
+			return !ages[i].updatedAt.Valid
+		}
+		if ages[i].updatedAt.Valid && !ages[i].updatedAt.Time.Equal(ages[j].updatedAt.Time) {
+			return ages[i].updatedAt.Time.Before(ages[j].updatedAt.Time)
+		}
+		return ages[i].hash < ages[j].hash
+	})
+
+	hashes := make([]string, len(ages))
+	for i, age := range ages {
+		hashes[i] = age.hash
+	}
+	return hashes
 }
 
 func groupMirrorCommonSize(locations []groupMirrorLocation) (int64, bool) {
@@ -581,14 +630,15 @@ func groupMirrorIndexedPathConflict(ctx context.Context, database *sql.DB, task 
 
 func recordGroupMirrorCopy(ctx context.Context, database *sql.DB, task groupMirrorTask) error {
 	result, err := database.ExecContext(ctx, `
-		INSERT INTO files (path, hostname, size, hash, root_folder, last_hashed_at)
-		VALUES ($1, $2, $3, $4, $5, NOW())
+		INSERT INTO files (path, hostname, size, hash, root_folder, last_hashed_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
 		ON CONFLICT (path, hostname)
 		DO UPDATE SET
 			size = EXCLUDED.size,
 			hash = EXCLUDED.hash,
 			root_folder = EXCLUDED.root_folder,
-			last_hashed_at = EXCLUDED.last_hashed_at
+			last_hashed_at = EXCLUDED.last_hashed_at,
+			updated_at = EXCLUDED.updated_at
 		WHERE COALESCE(files.root_folder, '') = COALESCE(EXCLUDED.root_folder, '')
 	`, task.RelPath, task.DstMember.Hostname, task.Size, task.Hash, task.DstMember.RootFolder)
 	if err != nil {
