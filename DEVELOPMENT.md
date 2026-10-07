@@ -59,3 +59,18 @@ npm --prefix web run dev
 ```
 
 Vite listens on `0.0.0.0:19110` and proxies `/api` to the Air-managed Go backend on `0.0.0.0:19111`.
+
+### Hash query index migration
+
+Migration `000007_add_hash_query_indexes` adds indexes for the case-insensitive
+host/size lookup and the default unhashed-file ID traversal. Apply it during a
+maintenance window: pause hashing, indexing, and dedupe writers, then run
+`deduplicator migrate up` from the directory containing `migrations/`.
+The transactional index builds block writes until they finish.
+
+After migration, run `ANALYZE files;` in PostgreSQL, inspect the hash batch query
+with `EXPLAIN (ANALYZE, BUFFERS)`, and resume workloads. The down migration drops
+only the two new indexes. No file data or hash-selection rules change.
+
+`files hash` database operations honor Ctrl+C and SIGTERM. There is no new query
+time limit; file reads retain their existing inactivity timeout.

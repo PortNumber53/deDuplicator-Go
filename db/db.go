@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
@@ -175,8 +176,13 @@ func DeleteHost(db *sql.DB, name string) error {
 
 // GetHostByHostname retrieves a host by hostname (case-insensitive)
 func GetHostByHostname(db *sql.DB, hostname string) (*Host, error) {
+	return GetHostByHostnameContext(context.Background(), db, hostname)
+}
+
+// GetHostByHostnameContext is the cancellable version of GetHostByHostname.
+func GetHostByHostnameContext(ctx context.Context, db *sql.DB, hostname string) (*Host, error) {
 	host := &Host{}
-	err := db.QueryRow(`
+	err := db.QueryRowContext(ctx, `
 		SELECT id, name, hostname, ip, root_path, settings, created_at
 		FROM hosts WHERE LOWER(hostname) = LOWER($1)
 	`, hostname).Scan(&host.ID, &host.Name, &host.Hostname, &host.IP, &host.RootPath, &host.Settings, &host.CreatedAt)
@@ -188,8 +194,13 @@ func GetHostByHostname(db *sql.DB, hostname string) (*Host, error) {
 
 // GetHost retrieves a host by name
 func GetHost(db *sql.DB, name string) (*Host, error) {
+	return GetHostContext(context.Background(), db, name)
+}
+
+// GetHostContext is the cancellable version of GetHost.
+func GetHostContext(ctx context.Context, db *sql.DB, name string) (*Host, error) {
 	host := &Host{}
-	err := db.QueryRow(`
+	err := db.QueryRowContext(ctx, `
 		SELECT id, name, hostname, ip, root_path, settings, created_at
 		FROM hosts WHERE name = $1
 	`, name).Scan(&host.ID, &host.Name, &host.Hostname, &host.IP, &host.RootPath, &host.Settings, &host.CreatedAt)

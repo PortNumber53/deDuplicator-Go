@@ -3,6 +3,7 @@ package db
 import (
 	"bytes"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -24,8 +25,11 @@ func TestMigrateDatabaseAppliesPendingFiles(t *testing.T) {
 
 	mock.ExpectExec(`CREATE TABLE IF NOT EXISTS migrations`).WillReturnResult(sqlmock.NewResult(0, 1))
 
-	// Six .up.sql files exist in migrations/ (including the files.updated_at migration).
-	for i := 0; i < 6; i++ {
+	migrationFiles, err := filepath.Glob("migrations/*.up.sql")
+	if err != nil || len(migrationFiles) == 0 {
+		t.Fatalf("find migrations: %v", err)
+	}
+	for range migrationFiles {
 		mock.ExpectQuery(`SELECT EXISTS`).WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
 		mock.ExpectBegin()
 		mock.ExpectExec(`(?s).*`).WillReturnResult(sqlmock.NewResult(0, 1))

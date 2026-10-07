@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -628,5 +629,73 @@ func TestListProblematicFilesNoResults(t *testing.T) {
 	// Verify all expectations were met
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("Unfulfilled expectations: %v", err)
+	}
+}
+
+// Delayed database operations must stop promptly without falling through to
+// another query, marking a file problematic, or leaving the batch open.
+func TestHashFilesDatabaseCancellation(t *testing.T) {
+	for _, stage := range []string{"host", "count", "prepare", "batch", "update", "error-update"} {
+		t.Run(stage, func(t *testing.T) {
+			database, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer database.Close()
+			mock.MatchExpectationsInOrder(false)
+			logging.InfoLogger = log.New(io.Discard, "", 0)
+			logging.ErrorLogger = log.New(io.Discard, "", 0)
+			root := t.TempDir()
+			if stage != "error-update" {
+				if err := os.WriteFile(filepath.Join(root, "file.txt"), []byte("test"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			host := mock.ExpectQuery("SELECT id, name, hostname").WillReturnRows(sqlmock.NewRows([]string{"id", "name", "hostname", "ip", "root_path", "settings", "created_at"}).AddRow(1, "test", "test", "", root, []byte(`{}`), time.Now()))
+			if stage == "host" {
+				host.WillDelayFor(5 * time.Second)
+			} else {
+				count := mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+				if stage == "count" {
+					count.WillDelayFor(5 * time.Second)
+				} else {
+					updateRE := `UPDATE files SET hash = \$1, last_hashed_at = NOW\(\) WHERE id = \$2`
+					errorRE := `UPDATE files SET hash = 'HASH_ERROR', last_hashed_at = NOW\(\) WHERE id = \$1`
+					prep := mock.ExpectPrepare(updateRE)
+					if stage == "prepare" {
+						prep.WillDelayFor(5 * time.Second)
+					} else {
+						mock.ExpectPrepare("UPDATE files SET hash = 'TIMEOUT_ERROR'")
+						mock.ExpectPrepare(errorRE)
+						batch := mock.ExpectQuery("SELECT id, path, root_folder").WillReturnRows(sqlmock.NewRows([]string{"id", "path", "root_folder", "effective_size"}).AddRow(1, "file.txt", root, 4))
+						if stage == "batch" {
+							batch.WillDelayFor(5 * time.Second)
+						} else {
+							batch.RowsWillBeClosed()
+							re := updateRE
+							if stage == "error-update" {
+								re = errorRE
+							}
+							mock.ExpectPrepare(re).ExpectExec().WillDelayFor(5 * time.Second).WillReturnResult(sqlmock.NewResult(0, 1))
+						}
+					}
+				}
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			timer := time.AfterFunc(150*time.Millisecond, cancel)
+			defer timer.Stop()
+			started := time.Now()
+			err = HashFiles(ctx, database, HashOptions{Server: "test", FullHash: true})
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("got %v, want context.Canceled", err)
+			}
+			if time.Since(started) > 2*time.Second {
+				t.Fatal("cancellation did not interrupt database wait")
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }

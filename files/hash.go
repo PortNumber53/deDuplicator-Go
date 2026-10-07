@@ -183,12 +183,25 @@ func resolveHashPriorityRootFolders(host *db.Host, paths []string) ([]string, er
 }
 
 // HashFiles calculates hashes for files in the database
-func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
+func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) (resultErr error) {
+	// Normalize driver cancellation errors and close any active batch on every exit.
+	var activeRows *sql.Rows
+	defer func() {
+		if activeRows != nil {
+			activeRows.Close()
+		}
+		if err := ctx.Err(); err != nil {
+			resultErr = fmt.Errorf("hashing cancelled: %w", err)
+		}
+	}()
 	// Get host information by hostname (case-insensitive)
-	host, err := db.GetHostByHostname(sqldb, opts.Server)
+	host, err := db.GetHostByHostnameContext(ctx, sqldb, opts.Server)
 	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		// Try by name if not found by hostname
-		host, err = db.GetHost(sqldb, opts.Server)
+		host, err = db.GetHostContext(ctx, sqldb, opts.Server)
 		if err != nil {
 			return fmt.Errorf("server not found: %s", opts.Server)
 		}
@@ -206,7 +219,7 @@ func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
 	// First, count total files to process
 	var totalFiles int64
 	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM files %s", whereClause)
-	err = sqldb.QueryRow(countQuery, hostname).Scan(&totalFiles)
+	err = sqldb.QueryRowContext(ctx, countQuery, hostname).Scan(&totalFiles)
 	if err != nil {
 		return fmt.Errorf("error counting files: %v", err)
 	}
@@ -222,7 +235,7 @@ func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
 		progressbar.OptionSetWidth(15))
 
 	// Prepare update statement
-	stmt, err := sqldb.Prepare(`
+	stmt, err := sqldb.PrepareContext(ctx, `
 		UPDATE files
 		SET hash = $1, last_hashed_at = NOW()
 		WHERE id = $2
@@ -233,7 +246,7 @@ func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
 	defer stmt.Close()
 
 	// Prepare statement to mark files that timed out
-	skipStmt, err := sqldb.Prepare(`
+	skipStmt, err := sqldb.PrepareContext(ctx, `
 		UPDATE files
 		SET hash = 'TIMEOUT_ERROR', last_hashed_at = NOW()
 		WHERE id = $1
@@ -244,7 +257,7 @@ func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
 	defer skipStmt.Close()
 
 	// Prepare statement to mark files that errored (non-timeout)
-	hashErrStmt, err := sqldb.Prepare(`
+	hashErrStmt, err := sqldb.PrepareContext(ctx, `
 		UPDATE files
 		SET hash = 'HASH_ERROR', last_hashed_at = NOW()
 		WHERE id = $1
@@ -281,18 +294,19 @@ func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
 
 		var rows *sql.Rows
 		if prioritizePaths && opts.LargeFirst {
-			rows, err = sqldb.Query(batchQuery, hostname, pq.Array(priorityRootFolders), nullableInt64Value(lastPathPriority), nullableInt64Value(lastEffectiveSize), lastID)
+			rows, err = sqldb.QueryContext(ctx, batchQuery, hostname, pq.Array(priorityRootFolders), nullableInt64Value(lastPathPriority), nullableInt64Value(lastEffectiveSize), lastID)
 		} else if prioritizePaths {
-			rows, err = sqldb.Query(batchQuery, hostname, pq.Array(priorityRootFolders), nullableInt64Value(lastPathPriority), lastID)
+			rows, err = sqldb.QueryContext(ctx, batchQuery, hostname, pq.Array(priorityRootFolders), nullableInt64Value(lastPathPriority), lastID)
 		} else if opts.LargeFirst {
-			rows, err = sqldb.Query(batchQuery, hostname, nullableInt64Value(lastEffectiveSize), lastID)
+			rows, err = sqldb.QueryContext(ctx, batchQuery, hostname, nullableInt64Value(lastEffectiveSize), lastID)
 		} else {
-			rows, err = sqldb.Query(batchQuery, hostname, lastID)
+			rows, err = sqldb.QueryContext(ctx, batchQuery, hostname, lastID)
 		}
 		if err != nil {
 			return fmt.Errorf("error querying files: %v", err)
 		}
 
+		activeRows = rows
 		fileCount := 0
 		for rows.Next() {
 			select {
@@ -333,12 +347,18 @@ func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
 
 			// Calculate hash - this will block until the hash is complete or times out
 			hash, err := calculateFileHash(fullPath)
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			if err != nil {
 				if strings.Contains(err.Error(), "hashing timed out") || strings.Contains(err.Error(), "hashing operation cancelled") {
 					logging.InfoLogger.Printf("Warning: Timeout while hashing file %s: %v", dbPath, err)
 					// Mark file as problematic in the database
-					_, dbErr := skipStmt.Exec(id)
+					_, dbErr := skipStmt.ExecContext(ctx, id)
 					if dbErr != nil {
+						if ctx.Err() != nil {
+							return ctx.Err()
+						}
 						logging.InfoLogger.Printf("Warning: Error marking file as problematic: %v", dbErr)
 					} else {
 						skipped++
@@ -346,8 +366,11 @@ func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
 					}
 				} else {
 					logging.InfoLogger.Printf("Warning: Error hashing file %s: %v", dbPath, err)
-					_, dbErr := hashErrStmt.Exec(id)
+					_, dbErr := hashErrStmt.ExecContext(ctx, id)
 					if dbErr != nil {
+						if ctx.Err() != nil {
+							return ctx.Err()
+						}
 						logging.InfoLogger.Printf("Warning: Error marking file as hash error: %v", dbErr)
 					}
 				}
@@ -356,8 +379,11 @@ func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
 			}
 
 			// Update database
-			_, err = stmt.Exec(hash, id)
+			_, err = stmt.ExecContext(ctx, hash, id)
 			if err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
 				logging.InfoLogger.Printf("Warning: Error updating hash for file %s: %v", dbPath, err)
 				continue
 			}
@@ -375,6 +401,7 @@ func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) error {
 		}
 
 		rows.Close()
+		activeRows = nil
 
 		if err := rows.Err(); err != nil {
 			return fmt.Errorf("error iterating rows: %v", err)

@@ -197,12 +197,15 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 
 		// Find host in database by hostname (case-insensitive)
 		var hostName string
-		err = database.QueryRow(`
+		err = database.QueryRowContext(ctx, `
 			SELECT name
 			FROM hosts
 			WHERE LOWER(hostname) = LOWER($1)
 		`, hostname).Scan(&hostName)
 		if err != nil {
+			if ctx.Err() != nil {
+				return fmt.Errorf("hashing cancelled: %w", ctx.Err())
+			}
 			if err == sql.ErrNoRows {
 				fmt.Printf("Error: no host found for hostname '%s'. Please add it using 'deduplicator manage add'.\n", hostname)
 				return err
