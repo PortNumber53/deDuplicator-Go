@@ -59,7 +59,11 @@ type groupMirrorConflict struct {
 }
 
 // MirrorGroup mirrors every hash in a path group to every member path.
-func MirrorGroup(ctx context.Context, database *sql.DB, opts GroupMirrorOptions) error {
+func MirrorGroup(ctx context.Context, database *sql.DB, opts GroupMirrorOptions) (resultErr error) {
+	defer cancellationResult(ctx, &resultErr)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	groupName := strings.TrimSpace(opts.GroupName)
 	if groupName == "" {
 		return fmt.Errorf("mirror-group requires a group name")
@@ -67,6 +71,9 @@ func MirrorGroup(ctx context.Context, database *sql.DB, opts GroupMirrorOptions)
 
 	members, err := resolveGroupMirrorMembers(ctx, database, groupName)
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return err
 	}
 	if len(members) < 2 {
@@ -75,6 +82,9 @@ func MirrorGroup(ctx context.Context, database *sql.DB, opts GroupMirrorOptions)
 
 	hashLocations, memberPathHashes, err := loadGroupMirrorHashes(ctx, database, members)
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return err
 	}
 	if len(hashLocations) == 0 {
@@ -83,12 +93,15 @@ func MirrorGroup(ctx context.Context, database *sql.DB, opts GroupMirrorOptions)
 	}
 
 	tasks, conflicts := planGroupMirrorTasks(hashLocations, members, memberPathHashes)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 
 	fmt.Printf("Mirroring group '%s' across %d paths (target copies per hash: %d)\n", groupName, len(members), len(members))
 	fmt.Printf("Found %d unique hashes; %d missing copies to create\n", len(hashLocations), len(tasks))
 	if opts.DryRun {
-		printGroupMirrorTasks("Would copy", tasks)
-		printGroupMirrorConflicts(conflicts)
+		printGroupMirrorTasks(ctx, "Would copy", tasks)
+		printGroupMirrorConflicts(ctx, conflicts)
 		return nil
 	}
 
@@ -96,8 +109,14 @@ func MirrorGroup(ctx context.Context, database *sql.DB, opts GroupMirrorOptions)
 	localHost = strings.ToLower(localHost)
 	copied := 0
 	for _, task := range tasks {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		conflictRoot, conflictHash, conflictsWithOtherRoot, err := groupMirrorIndexedPathConflict(ctx, database, task)
 		if err != nil {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			conflicts = append(conflicts, groupMirrorConflict{
 				Hash:   task.Hash,
 				Path:   task.RelPath,
@@ -119,6 +138,9 @@ func MirrorGroup(ctx context.Context, database *sql.DB, opts GroupMirrorOptions)
 		dstAbs := filepath.Join(task.DstMember.RootFolder, task.RelPath)
 		exists, err := groupMirrorFileExists(ctx, localHost, task.DstMember, dstAbs)
 		if err != nil {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			conflicts = append(conflicts, groupMirrorConflict{
 				Hash:   task.Hash,
 				Path:   task.RelPath,
@@ -138,6 +160,9 @@ func MirrorGroup(ctx context.Context, database *sql.DB, opts GroupMirrorOptions)
 		}
 
 		if err := ensureGroupMirrorParentDir(ctx, localHost, task.DstMember, dstAbs); err != nil {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			conflicts = append(conflicts, groupMirrorConflict{
 				Hash:   task.Hash,
 				Path:   task.RelPath,
@@ -148,6 +173,9 @@ func MirrorGroup(ctx context.Context, database *sql.DB, opts GroupMirrorOptions)
 		}
 
 		if err := copyGroupMirrorFile(ctx, localHost, task); err != nil {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			conflicts = append(conflicts, groupMirrorConflict{
 				Hash:   task.Hash,
 				Path:   task.RelPath,
@@ -158,6 +186,9 @@ func MirrorGroup(ctx context.Context, database *sql.DB, opts GroupMirrorOptions)
 		}
 
 		if err := recordGroupMirrorCopy(ctx, database, task); err != nil {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			conflicts = append(conflicts, groupMirrorConflict{
 				Hash:   task.Hash,
 				Path:   task.RelPath,
@@ -175,17 +206,26 @@ func MirrorGroup(ctx context.Context, database *sql.DB, opts GroupMirrorOptions)
 	// every hash that was considered so the next run can prioritize files that
 	// have never been visited or have gone the longest without a visit.
 	for _, hash := range orderedGroupMirrorHashes(hashLocations) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := touchGroupHash(ctx, database, hash, nil, members); err != nil {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			return fmt.Errorf("error updating traversal timestamp for hash %s: %v", hash, err)
 		}
 	}
 
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	fmt.Printf("\nMirror-group summary: copied %d files", copied)
 	if len(conflicts) > 0 {
 		fmt.Printf(", %d conflicts/skips", len(conflicts))
 	}
 	fmt.Println()
-	printGroupMirrorConflicts(conflicts)
+	printGroupMirrorConflicts(ctx, conflicts)
 	return nil
 }
 
@@ -193,23 +233,45 @@ func MirrorGroup(ctx context.Context, database *sql.DB, opts GroupMirrorOptions)
 // and root folder, in group priority order. It is shared by mirror-group and
 // dedupe-group; only mirroring needs the per-member file counts.
 func resolveGroupMembers(database *sql.DB, groupName string) ([]groupMember, error) {
-	if _, err := db.GetPathGroup(database, groupName); err != nil {
+	return resolveGroupMembersContext(context.Background(), database, groupName)
+}
+
+func resolveGroupMembersContext(ctx context.Context, database *sql.DB, groupName string) ([]groupMember, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if _, err := db.GetPathGroupContext(ctx, database, groupName); err != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		return nil, fmt.Errorf("error getting path group: %v", err)
 	}
 
-	groupMembers, err := db.ListGroupMembers(database, groupName)
+	groupMembers, err := db.ListGroupMembersContext(ctx, database, groupName)
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		return nil, fmt.Errorf("error listing group members: %v", err)
 	}
 
 	members := make([]groupMember, 0, len(groupMembers))
 	for i, member := range groupMembers {
-		host, err := db.GetHost(database, member.HostName)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		host, err := db.GetHostContext(ctx, database, member.HostName)
 		if err != nil {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			return nil, fmt.Errorf("error getting host '%s': %v", member.HostName, err)
 		}
 		paths, err := host.GetPaths()
 		if err != nil {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			return nil, fmt.Errorf("error decoding paths for host '%s': %v", member.HostName, err)
 		}
 		rootFolder, ok := paths[member.FriendlyPath]
@@ -231,14 +293,26 @@ func resolveGroupMembers(database *sql.DB, groupName string) ([]groupMember, err
 }
 
 func resolveGroupMirrorMembers(ctx context.Context, database *sql.DB, groupName string) ([]groupMember, error) {
-	members, err := resolveGroupMembers(database, groupName)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	members, err := resolveGroupMembersContext(ctx, database, groupName)
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		return nil, err
 	}
 
 	for i := range members {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		members[i].FileCount, err = countGroupMirrorMemberFiles(ctx, database, members[i])
 		if err != nil {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			return nil, err
 		}
 	}
@@ -247,6 +321,9 @@ func resolveGroupMirrorMembers(ctx context.Context, database *sql.DB, groupName 
 }
 
 func countGroupMirrorMemberFiles(ctx context.Context, database *sql.DB, member groupMember) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	var count int64
 	err := database.QueryRowContext(ctx, `
 		SELECT COUNT(*)
@@ -255,16 +332,25 @@ func countGroupMirrorMemberFiles(ctx context.Context, database *sql.DB, member g
 		AND root_folder = $2
 	`, member.Hostname, member.RootFolder).Scan(&count)
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
 		return 0, fmt.Errorf("error counting files for %s: %v", groupMirrorMemberLabel(member), err)
 	}
 	return count, nil
 }
 
 func loadGroupMirrorHashes(ctx context.Context, database *sql.DB, members []groupMember) (map[string][]groupMirrorLocation, map[int]map[string]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
 	hashLocations := make(map[string][]groupMirrorLocation)
 	memberPathHashes := make(map[int]map[string]string, len(members))
 
 	for _, member := range members {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
 		memberPathHashes[member.Index] = make(map[string]string)
 		rows, err := database.QueryContext(ctx, `
 			SELECT path, hash, size, updated_at
@@ -277,14 +363,23 @@ func loadGroupMirrorHashes(ctx context.Context, database *sql.DB, members []grou
 			ORDER BY updated_at ASC NULLS FIRST, hash, path
 		`, member.Hostname, member.RootFolder)
 		if err != nil {
+			if err := ctx.Err(); err != nil {
+				return nil, nil, err
+			}
 			return nil, nil, fmt.Errorf("error loading files for %s: %v", groupMirrorMemberLabel(member), err)
 		}
 
 		for rows.Next() {
+			if err := ctx.Err(); err != nil {
+				return nil, nil, err
+			}
 			var path, hash string
 			var size int64
 			var updatedAt sql.NullTime
 			if err := rows.Scan(&path, &hash, &size, &updatedAt); err != nil {
+				if err := ctx.Err(); err != nil {
+					return nil, nil, err
+				}
 				rows.Close()
 				return nil, nil, fmt.Errorf("error scanning files for %s: %v", groupMirrorMemberLabel(member), err)
 			}
@@ -298,6 +393,9 @@ func loadGroupMirrorHashes(ctx context.Context, database *sql.DB, members []grou
 			})
 		}
 		if err := rows.Err(); err != nil {
+			if err := ctx.Err(); err != nil {
+				return nil, nil, err
+			}
 			rows.Close()
 			return nil, nil, fmt.Errorf("error iterating files for %s: %v", groupMirrorMemberLabel(member), err)
 		}
@@ -527,6 +625,9 @@ func cleanGroupMirrorRelPath(relPath string) (string, error) {
 }
 
 func groupMirrorFileExists(ctx context.Context, localHost string, member groupMember, absPath string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	if groupMirrorIsLocal(localHost, member) {
 		_, err := os.Stat(absPath)
 		if err == nil {
@@ -550,10 +651,20 @@ func groupMirrorFileExists(ctx context.Context, localHost string, member groupMe
 	return false, fmt.Errorf("ssh destination check failed: %v", err)
 }
 
-func ensureGroupMirrorParentDir(ctx context.Context, localHost string, member groupMember, absPath string) error {
+func ensureGroupMirrorParentDir(ctx context.Context, localHost string, member groupMember, absPath string) (resultErr error) {
+	defer cancellationResult(ctx, &resultErr)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	parentDir := filepath.Dir(absPath)
 	if groupMirrorIsLocal(localHost, member) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := os.MkdirAll(parentDir, 0755); err != nil {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			return fmt.Errorf("mkdir failed: %v", err)
 		}
 		return nil
@@ -562,12 +673,19 @@ func ensureGroupMirrorParentDir(ctx context.Context, localHost string, member gr
 	cmd := exec.CommandContext(ctx, "ssh", member.Hostname, "mkdir -p "+shellEscape(parentDir))
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return fmt.Errorf("remote mkdir failed: %v %s", err, strings.TrimSpace(string(output)))
 	}
 	return nil
 }
 
-func copyGroupMirrorFile(ctx context.Context, localHost string, task groupMirrorTask) error {
+func copyGroupMirrorFile(ctx context.Context, localHost string, task groupMirrorTask) (resultErr error) {
+	defer cancellationResult(ctx, &resultErr)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	srcAbs := filepath.Join(task.SrcMember.RootFolder, task.RelPath)
 	dstAbs := filepath.Join(task.DstMember.RootFolder, task.RelPath)
 
@@ -582,34 +700,59 @@ func copyGroupMirrorFile(ctx context.Context, localHost string, task groupMirror
 
 	tmpFile, err := os.CreateTemp("", "deduplicator-mirror-*")
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return fmt.Errorf("creating temporary transfer file failed: %v", err)
 	}
 	tmpPath := tmpFile.Name()
 	if err := tmpFile.Close(); err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("closing temporary transfer file failed: %v", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	defer os.Remove(tmpPath)
 
 	if err := runGroupMirrorRsync(ctx, srcEndpoint, tmpPath); err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return err
 	}
 	return runGroupMirrorRsync(ctx, tmpPath, dstEndpoint)
 }
 
-func runGroupMirrorRsync(ctx context.Context, source, destination string) error {
+func runGroupMirrorRsync(ctx context.Context, source, destination string) (resultErr error) {
+	defer cancellationResult(ctx, &resultErr)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	// -s (--secluded-args/--protect-args) sends remote paths to the far side
 	// verbatim instead of through a remote shell, so paths need no quoting and
 	// spaces or glob characters in them stay intact.
 	cmd := exec.CommandContext(ctx, "rsync", "-a", "-s", source, destination)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return fmt.Errorf("rsync failed: %v %s", err, strings.TrimSpace(string(output)))
 	}
 	return nil
 }
 
 func groupMirrorIndexedPathConflict(ctx context.Context, database *sql.DB, task groupMirrorTask) (string, string, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return "", "", false, err
+	}
 	var rootFolder, hash sql.NullString
 	err := database.QueryRowContext(ctx, `
 		SELECT root_folder, hash
@@ -623,12 +766,19 @@ func groupMirrorIndexedPathConflict(ctx context.Context, database *sql.DB, task 
 		return "", "", false, nil
 	}
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return "", "", false, err
+		}
 		return "", "", false, fmt.Errorf("error checking indexed path conflicts: %v", err)
 	}
 	return rootFolder.String, hash.String, true, nil
 }
 
-func recordGroupMirrorCopy(ctx context.Context, database *sql.DB, task groupMirrorTask) error {
+func recordGroupMirrorCopy(ctx context.Context, database *sql.DB, task groupMirrorTask) (resultErr error) {
+	defer cancellationResult(ctx, &resultErr)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	result, err := database.ExecContext(ctx, `
 		INSERT INTO files (path, hostname, size, hash, root_folder, last_hashed_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
@@ -642,10 +792,16 @@ func recordGroupMirrorCopy(ctx context.Context, database *sql.DB, task groupMirr
 		WHERE COALESCE(files.root_folder, '') = COALESCE(EXCLUDED.root_folder, '')
 	`, task.RelPath, task.DstMember.Hostname, task.Size, task.Hash, task.DstMember.RootFolder)
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return fmt.Errorf("error recording mirrored file: %v", err)
 	}
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return fmt.Errorf("error checking mirrored file insert result: %v", err)
 	}
 	if rowsAffected == 0 {
@@ -674,12 +830,15 @@ func groupMirrorMemberLabel(member groupMember) string {
 	return fmt.Sprintf("%s:%s", member.HostName, member.FriendlyPath)
 }
 
-func printGroupMirrorTasks(prefix string, tasks []groupMirrorTask) {
+func printGroupMirrorTasks(ctx context.Context, prefix string, tasks []groupMirrorTask) {
 	if len(tasks) == 0 {
 		return
 	}
 	fmt.Printf("\n%s %d files:\n", prefix, len(tasks))
 	for _, task := range tasks {
+		if ctx.Err() != nil {
+			return
+		}
 		fmt.Printf("  %s -> %s: %s (%s)\n",
 			groupMirrorMemberLabel(task.SrcMember),
 			groupMirrorMemberLabel(task.DstMember),
@@ -689,12 +848,15 @@ func printGroupMirrorTasks(prefix string, tasks []groupMirrorTask) {
 	}
 }
 
-func printGroupMirrorConflicts(conflicts []groupMirrorConflict) {
+func printGroupMirrorConflicts(ctx context.Context, conflicts []groupMirrorConflict) {
 	if len(conflicts) == 0 {
 		return
 	}
 	fmt.Printf("\nConflicts/skips:\n")
 	for _, conflict := range conflicts {
+		if ctx.Err() != nil {
+			return
+		}
 		member := ""
 		if conflict.Member.HostName != "" {
 			member = " " + groupMirrorMemberLabel(conflict.Member)

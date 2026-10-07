@@ -20,10 +20,20 @@ type duplicateMoveGroup struct {
 	Size      int64
 }
 
-func MoveDuplicates(ctx context.Context, db *sql.DB, opts DuplicateListOptions, moveOpts MoveOptions) error {
+func MoveDuplicates(ctx context.Context, db *sql.DB, opts DuplicateListOptions, moveOpts MoveOptions) (resultErr error) {
+	defer cancellationResult(ctx, &resultErr)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	// Create target directory if it doesn't exist
 	if !moveOpts.DryRun {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := os.MkdirAll(moveOpts.TargetDir, 0755); err != nil {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			return fmt.Errorf("error creating target directory: %v", err)
 		}
 	}
@@ -31,6 +41,9 @@ func MoveDuplicates(ctx context.Context, db *sql.DB, opts DuplicateListOptions, 
 	// Get hostname for current machine
 	hostname, err := os.Hostname()
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return fmt.Errorf("error getting hostname: %v", err)
 	}
 
@@ -40,12 +53,15 @@ func MoveDuplicates(ctx context.Context, db *sql.DB, opts DuplicateListOptions, 
 
 	// Find host in database by hostname (case-insensitive)
 	var hostName string
-	err = db.QueryRow(`
+	err = db.QueryRowContext(ctx, `
 		SELECT hostname
 		FROM hosts
 		WHERE LOWER(hostname) = LOWER($1)
 	`, hostname).Scan(&hostName)
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err == sql.ErrNoRows {
 			return fmt.Errorf("no host found for hostname %s, please add it using 'dedupe manage add'", hostname)
 		}
@@ -92,6 +108,9 @@ func MoveDuplicates(ctx context.Context, db *sql.DB, opts DuplicateListOptions, 
 	// Query duplicate groups
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return fmt.Errorf("error querying duplicates: %v", err)
 	}
 	defer rows.Close()
@@ -103,18 +122,27 @@ func MoveDuplicates(ctx context.Context, db *sql.DB, opts DuplicateListOptions, 
 	var totalMoved, totalSaved int64
 
 	for rows.Next() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		var hash, path, hostname, rootPath string
 		var size int64
 
 		if err := rows.Scan(&hash, &path, &hostname, &size, &rootPath); err != nil {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			return fmt.Errorf("error scanning row: %v", err)
 		}
 
 		if hash != currentHash || size != currentSize {
 			// Process previous group
 			if currentHash != "" {
-				moved, err := moveGroupDuplicates(currentGroup, moveOpts, db, hostName)
+				moved, err := moveGroupDuplicatesContext(ctx, currentGroup, moveOpts, db, hostName)
 				if err != nil {
+					if err := ctx.Err(); err != nil {
+						return err
+					}
 					return fmt.Errorf("error moving duplicates for hash %s: %v", currentHash, err)
 				}
 				totalMoved += moved
@@ -138,12 +166,18 @@ func MoveDuplicates(ctx context.Context, db *sql.DB, opts DuplicateListOptions, 
 		currentGroup.RootPaths = append(currentGroup.RootPaths, rootPath)
 	}
 
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	// Process the last group
 	if currentHash != "" {
 		// Debug log for root paths
 		logging.InfoLogger.Printf("[DEBUG] Looping through these root paths: %v", currentGroup.RootPaths)
-		moved, err := moveGroupDuplicates(currentGroup, moveOpts, db, hostName)
+		moved, err := moveGroupDuplicatesContext(ctx, currentGroup, moveOpts, db, hostName)
 		if err != nil {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			return fmt.Errorf("error moving duplicates for hash %s: %v", currentHash, err)
 		}
 		totalMoved += moved
@@ -151,6 +185,9 @@ func MoveDuplicates(ctx context.Context, db *sql.DB, opts DuplicateListOptions, 
 	}
 
 	if err := rows.Err(); err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return fmt.Errorf("error iterating rows: %v", err)
 	}
 
@@ -164,6 +201,13 @@ func MoveDuplicates(ctx context.Context, db *sql.DB, opts DuplicateListOptions, 
 
 // moveGroupDuplicates moves local duplicate files that are not the deterministic global keeper.
 func moveGroupDuplicates(group duplicateMoveGroup, opts MoveOptions, db *sql.DB, localHost string) (int64, error) {
+	return moveGroupDuplicatesContext(context.Background(), group, opts, db, localHost)
+}
+
+func moveGroupDuplicatesContext(ctx context.Context, group duplicateMoveGroup, opts MoveOptions, db *sql.DB, localHost string) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	if len(group.Files) < 2 {
 		return 0, nil // Nothing to move
 	}
@@ -182,6 +226,9 @@ func moveGroupDuplicates(group duplicateMoveGroup, opts MoveOptions, db *sql.DB,
 	// Count local files in parent directories. Remote hosts are never inspected or moved
 	// by this process; each host archives its own files when the command runs there.
 	for i, path := range group.Files {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
 		info := fileInfo{
 			path:     path,
 			host:     group.Hosts[i],
@@ -203,6 +250,9 @@ func moveGroupDuplicates(group duplicateMoveGroup, opts MoveOptions, db *sql.DB,
 		parentDir := filepath.Dir(info.sourcePath)
 		entries, err := os.ReadDir(parentDir)
 		if err != nil {
+			if err := ctx.Err(); err != nil {
+				return 0, err
+			}
 			// If directory doesn't exist, assign count of 0
 			logging.ErrorLogger.Printf("Warning: Could not read directory %s: %v", parentDir, err)
 			files[i] = info
@@ -212,6 +262,9 @@ func moveGroupDuplicates(group duplicateMoveGroup, opts MoveOptions, db *sql.DB,
 		// Count only files (not directories)
 		fileCount := 0
 		for _, entry := range entries {
+			if err := ctx.Err(); err != nil {
+				return 0, err
+			}
 			if !entry.IsDir() {
 				fileCount++
 			}
@@ -236,6 +289,9 @@ func moveGroupDuplicates(group duplicateMoveGroup, opts MoveOptions, db *sql.DB,
 	keeper := files[0]
 	hasLocalMove := false
 	for i := 1; i < len(files); i++ {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
 		if files[i].local {
 			hasLocalMove = true
 			break
@@ -250,6 +306,9 @@ func moveGroupDuplicates(group duplicateMoveGroup, opts MoveOptions, db *sql.DB,
 
 	var moved int64
 	for i := 1; i < len(files); i++ {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
 		if !files[i].local {
 			continue
 		}
@@ -274,20 +333,35 @@ func moveGroupDuplicates(group duplicateMoveGroup, opts MoveOptions, db *sql.DB,
 				sourcePath, files[i].host, files[i].parentDirCount, targetPath)
 
 			// Create target directory
+			if err := ctx.Err(); err != nil {
+				return 0, err
+			}
 			if err := os.MkdirAll(targetDir, 0755); err != nil {
+				if err := ctx.Err(); err != nil {
+					return 0, err
+				}
 				return moved, fmt.Errorf("error creating directory %s: %v", targetDir, err)
 			}
 
 			// Move the file using rsync to handle cross-filesystem moves
 			// First try with os.Rename for efficiency (same filesystem)
+			if err := ctx.Err(); err != nil {
+				return 0, err
+			}
 			err := os.Rename(sourcePath, targetPath)
 			if err != nil {
+				if err := ctx.Err(); err != nil {
+					return 0, err
+				}
 				// If rename fails due to cross-device link, use rsync
 				if strings.Contains(err.Error(), "invalid cross-device link") {
 					// Use rsync to copy the file
-					cmd := exec.Command("rsync", "-a", "--remove-source-files", sourcePath, targetPath)
+					cmd := exec.CommandContext(ctx, "rsync", "-a", "--remove-source-files", sourcePath, targetPath)
 					output, err := cmd.CombinedOutput()
 					if err != nil {
+						if err := ctx.Err(); err != nil {
+							return 0, err
+						}
 						return moved, fmt.Errorf("error moving file %s with rsync: %v\nOutput: %s", sourcePath, err, output)
 					}
 				} else {
@@ -297,13 +371,16 @@ func moveGroupDuplicates(group duplicateMoveGroup, opts MoveOptions, db *sql.DB,
 			}
 
 			// Delete the file from the database
-			_, err = db.Exec(`
+			_, err = db.ExecContext(ctx, `
 				DELETE FROM files
 				WHERE path = $1
 				AND LOWER(hostname) = LOWER($2)
 				AND COALESCE(root_folder, '') = $3
 			`, files[i].path, files[i].host, files[i].rootPath)
 			if err != nil {
+				if err := ctx.Err(); err != nil {
+					return 0, err
+				}
 				logging.ErrorLogger.Printf("Warning: Failed to delete file %s from database: %v", files[i].path, err)
 			}
 		}

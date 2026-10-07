@@ -20,7 +20,11 @@ func shellEscape(s string) string {
 }
 
 // ImportFiles imports files from a source directory to a target host
-func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) error {
+func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) (resultErr error) {
+	defer cancellationResult(ctx, &resultErr)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	// Validate options
 	if opts.SourcePath == "" {
 		return fmt.Errorf("source path is required")
@@ -32,6 +36,9 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 	// Check if source path exists
 	sourceInfo, err := os.Stat(opts.SourcePath)
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return fmt.Errorf("error accessing source path: %v", err)
 	}
 	if !sourceInfo.IsDir() {
@@ -40,12 +47,15 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 
 	// Get host information from database
 	var displayName, ip, rootPath, dbHostName string
-	err = database.QueryRow(`
+	err = database.QueryRowContext(ctx, `
 		SELECT name, ip, root_path
 		FROM hosts
 		WHERE LOWER(name) = LOWER($1)
 	`, opts.HostName).Scan(&displayName, &ip, &rootPath)
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err == sql.ErrNoRows {
 			return fmt.Errorf("host not found: %s", opts.HostName)
 		}
@@ -53,8 +63,11 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 	}
 
 	// Try to get the actual hostname for the target from the hosts table
-	err = database.QueryRow(`SELECT hostname FROM hosts WHERE LOWER(name) = LOWER($1)`, opts.HostName).Scan(&dbHostName)
+	err = database.QueryRowContext(ctx, `SELECT hostname FROM hosts WHERE LOWER(name) = LOWER($1)`, opts.HostName).Scan(&dbHostName)
 	if err != nil || dbHostName == "" {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		// fallback to opts.HostName if not present
 		dbHostName = opts.HostName
 	}
@@ -67,7 +80,7 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 
 	// Get the host's path mappings
 	var host db.Host
-	err = database.QueryRow(`
+	err = database.QueryRowContext(ctx, `
 		SELECT id, name, hostname, root_path, settings
 		FROM hosts
 		WHERE LOWER(name) = LOWER($1)
@@ -75,12 +88,18 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 		&host.ID, &host.Name, &host.Hostname, &host.RootPath, &host.Settings,
 	)
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return fmt.Errorf("error getting host details: %v", err)
 	}
 
 	// Get the actual path for the friendly name
 	paths, err := host.GetPaths()
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return fmt.Errorf("error getting path mappings: %v", err)
 	}
 
@@ -135,6 +154,9 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 
 	err = filepath.Walk(opts.SourcePath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			fmt.Printf("Error accessing path %s: %v\n", path, err)
 			errorCount++
 			return nil
@@ -173,6 +195,9 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 		// Get relative path from source directory
 		relPath, err := filepath.Rel(opts.SourcePath, path)
 		if err != nil {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			fmt.Printf("Error getting relative path for %s: %v\n", path, err)
 			errorCount++
 			return nil
@@ -195,6 +220,10 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 			}
 		}
 
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
 		// Handle duplicate files if DuplicateDir is specified
 		if targetExists && opts.DuplicateDir != "" {
 			// Create the duplicate directory path by appending the relative path
@@ -205,7 +234,13 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 				fmt.Printf("Would move duplicate %s to %s\n", path, duplicatePath)
 			} else {
 				// Create the target directory structure
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 				if err := os.MkdirAll(duplicateDir, 0755); err != nil {
+					if err := ctx.Err(); err != nil {
+						return err
+					}
 					fmt.Printf("Error creating duplicate directory %s: %v\n", duplicateDir, err)
 					errorCount++
 					return nil
@@ -213,13 +248,22 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 
 				// Move the file to the duplicate directory using rsync for cross-filesystem moves
 				fmt.Printf("Moving duplicate %s (%s) to %s\n", path, formatSize(info.Size()), duplicatePath)
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 				err = os.Rename(path, duplicatePath)
 				if err != nil {
+					if err := ctx.Err(); err != nil {
+						return err
+					}
 					// If rename fails due to cross-device link, use rsync
 					if strings.Contains(err.Error(), "invalid cross-device link") {
-						cmd := exec.Command("rsync", "-a", "--remove-source-files", path, duplicatePath)
+						cmd := exec.CommandContext(ctx, "rsync", "-a", "--remove-source-files", path, duplicatePath)
 						output, rsyncErr := cmd.CombinedOutput()
 						if rsyncErr != nil {
+							if err := ctx.Err(); err != nil {
+								return err
+							}
 							fmt.Printf("Error moving duplicate file %s with rsync: %v\nOutput: %s\n", path, rsyncErr, output)
 							errorCount++
 							return nil
@@ -258,8 +302,11 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 			}
 
 			// Calculate file hash
-			hash, err := calculateFileHash(path)
+			hash, err := calculateFileHashContext(ctx, path)
 			if err != nil {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 				fmt.Printf("Error calculating hash for %s: %v\n", path, err)
 				errorCount++
 				return nil
@@ -268,12 +315,15 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 
 			// Check if file with this hash already exists for this host
 			var existingCount int
-			err = database.QueryRow(`
+			err = database.QueryRowContext(ctx, `
 				SELECT COUNT(*)
 				FROM files
 				WHERE hash = $1 AND hostname = $2
 			`, hash, dbHostName).Scan(&existingCount)
 			if err != nil {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 				fmt.Printf("Error querying database for hash %s: %v\n", hash, err)
 				errorCount++
 				return nil
@@ -287,18 +337,33 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 					if opts.DryRun {
 						fmt.Printf("Would move duplicate %s to %s\n", path, duplicatePath)
 					} else {
+						if err := ctx.Err(); err != nil {
+							return err
+						}
 						if err := os.MkdirAll(duplicateDir, 0755); err != nil {
+							if err := ctx.Err(); err != nil {
+								return err
+							}
 							fmt.Printf("Error creating duplicate directory %s: %v\n", duplicateDir, err)
 							errorCount++
 							return nil
 						}
 
 						fmt.Printf("Moving duplicate %s (%s) to %s\n", path, formatSize(info.Size()), duplicatePath)
+						if err := ctx.Err(); err != nil {
+							return err
+						}
 						if err := os.Rename(path, duplicatePath); err != nil {
+							if err := ctx.Err(); err != nil {
+								return err
+							}
 							if strings.Contains(err.Error(), "invalid cross-device link") {
-								cmd := exec.Command("rsync", "-a", "--remove-source-files", path, duplicatePath)
+								cmd := exec.CommandContext(ctx, "rsync", "-a", "--remove-source-files", path, duplicatePath)
 								output, rsyncErr := cmd.CombinedOutput()
 								if rsyncErr != nil {
+									if err := ctx.Err(); err != nil {
+										return err
+									}
 									fmt.Printf("Error moving duplicate file %s with rsync: %v\nOutput: %s\n", path, rsyncErr, output)
 									errorCount++
 									return nil
@@ -325,7 +390,13 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 			// Create target directory structure first
 			targetDir := filepath.Dir(targetPath)
 			if isLocal {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 				if err := os.MkdirAll(targetDir, 0755); err != nil {
+					if err := ctx.Err(); err != nil {
+						return err
+					}
 					fmt.Printf("Error creating directory %s: %v\n", targetDir, err)
 					errorCount++
 					return nil
@@ -333,6 +404,9 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 			} else {
 				mkdirCmd := exec.CommandContext(ctx, "ssh", targetHost, "mkdir", "-p", targetDir)
 				if err := mkdirCmd.Run(); err != nil {
+					if err := ctx.Err(); err != nil {
+						return err
+					}
 					fmt.Printf("Error creating directory %s: %v\n", targetDir, err)
 					errorCount++
 					return nil
@@ -361,6 +435,9 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 
 			output, err := rsyncCmd.CombinedOutput()
 			if err != nil {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 				fmt.Printf("Error transferring file %s: %v\n%s\n", path, err, output)
 				errorCount++
 				return nil
@@ -373,13 +450,16 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 			// Debug output: print query and parameters with canonical hostname
 			logging.InfoLogger.Printf("INSERT INTO files (path, size, hash, hostname) VALUES ('%s', %d, '%s', '%s')", targetPath, info.Size(), hash, dbHostName)
 			// Add file to database using canonical hostname
-			_, err = database.Exec(`
+			_, err = database.ExecContext(ctx, `
 				INSERT INTO files (path, size, hash, hostname)
 				VALUES ($1, $2, $3, $4)
 				ON CONFLICT (path, hostname) DO UPDATE
 				SET size = $2, hash = $3
 			`, targetPath, info.Size(), hash, dbHostName)
 			if err != nil {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 				logging.ErrorLogger.Printf("Error adding file to database: %v", err)
 				errorCount++
 				return nil
@@ -391,9 +471,15 @@ func ImportFiles(ctx context.Context, database *sql.DB, opts ImportOptions) erro
 	})
 
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return fmt.Errorf("error walking source directory: %v", err)
 	}
 
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	fmt.Printf("\nImport summary:\n")
 	fmt.Printf("  Total files processed: %d\n", fileCount)
 	fmt.Printf("  Files transferred: %d (%s)\n", transferCount, formatSize(transferTotalSize))

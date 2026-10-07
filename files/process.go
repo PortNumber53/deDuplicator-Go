@@ -16,10 +16,17 @@ import (
 )
 
 // ProcessStdin processes a list of files from standard input and adds them to the database
-func ProcessStdin(ctx context.Context, db *sql.DB) error {
+func ProcessStdin(ctx context.Context, db *sql.DB) (resultErr error) {
+	defer cancellationResult(ctx, &resultErr)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	// Get hostname for current machine
 	hostname, err := os.Hostname()
 	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		return fmt.Errorf("error getting hostname: %v", err)
 	}
 
@@ -29,12 +36,15 @@ func ProcessStdin(ctx context.Context, db *sql.DB) error {
 
 	// Find host in database by hostname (case-insensitive)
 	var hostName string
-	err = db.QueryRow(`
+	err = db.QueryRowContext(ctx, `
 		SELECT name
 		FROM hosts
 		WHERE LOWER(hostname) = LOWER($1)
 	`, hostname).Scan(&hostName)
 	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if err == sql.ErrNoRows {
 			return fmt.Errorf("no host found for hostname %s, please add it using 'dedupe manage add'", hostname)
 		}
@@ -43,26 +53,44 @@ func ProcessStdin(ctx context.Context, db *sql.DB) error {
 	log.Printf("Found host: %s", hostName)
 
 	// Begin transaction
-	tx, err := db.Begin()
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		return fmt.Errorf("error starting transaction: %v", err)
 	}
 	defer tx.Rollback()
 
 	// Prepare statement for batch inserts
-	stmt, err := tx.Prepare(`
+	stmt, err := tx.PrepareContext(ctx, `
 		INSERT INTO files (path, hostname, size)
 		VALUES ($1, $2, $3)
 		ON CONFLICT (path, hostname) 
 		DO UPDATE SET size = EXCLUDED.size
 	`)
 	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		return fmt.Errorf("error preparing statement: %v", err)
 	}
 	defer stmt.Close()
 
 	// Read file paths from stdin
-	scanner := bufio.NewScanner(os.Stdin)
+	input := os.Stdin
+	stopWatch := make(chan struct{})
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		select {
+		case <-ctx.Done():
+			input.Close()
+		case <-stopWatch:
+		}
+	}()
+	defer func() { close(stopWatch); <-watchDone }()
+	scanner := bufio.NewScanner(input)
 	var processed, skipped int
 
 	for scanner.Scan() {
@@ -81,6 +109,9 @@ func ProcessStdin(ctx context.Context, db *sql.DB) error {
 		// Get file info
 		fileInfo, err := os.Lstat(path)
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			log.Printf("Warning: Error accessing path %s: %v", path, err)
 			skipped++
 			continue
@@ -101,8 +132,11 @@ func ProcessStdin(ctx context.Context, db *sql.DB) error {
 		}
 
 		// Insert file into database
-		_, err = stmt.Exec(path, hostName, fileInfo.Size())
+		_, err = stmt.ExecContext(ctx, path, hostName, fileInfo.Size())
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			log.Printf("Warning: Error inserting file %s: %v", path, err)
 			skipped++
 			continue
@@ -114,6 +148,9 @@ func ProcessStdin(ctx context.Context, db *sql.DB) error {
 		}
 	}
 
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("error reading from stdin: %v", err)
 	}
@@ -128,7 +165,11 @@ func ProcessStdin(ctx context.Context, db *sql.DB) error {
 }
 
 // ProcessFiles processes files in the given directory and adds them to the database
-func ProcessFiles(ctx context.Context, db *sql.DB, dir string, opts FindOptions) error {
+func ProcessFiles(ctx context.Context, db *sql.DB, dir string, opts FindOptions) (resultErr error) {
+	defer cancellationResult(ctx, &resultErr)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	// Get hostname for current machine
 	hostname, err := os.Hostname()
 	if err != nil {
@@ -141,7 +182,7 @@ func ProcessFiles(ctx context.Context, db *sql.DB, dir string, opts FindOptions)
 
 	// Find host in database by hostname (case-insensitive)
 	var hostName string
-	err = db.QueryRow(`
+	err = db.QueryRowContext(ctx, `
 		SELECT name
 		FROM hosts
 		WHERE LOWER(hostname) = LOWER($1)
@@ -161,7 +202,7 @@ func ProcessFiles(ctx context.Context, db *sql.DB, dir string, opts FindOptions)
 		rootPath string
 	}
 
-	err = db.QueryRow("SELECT id, name, root_path FROM hosts WHERE name = $1", hostName).Scan(&host.id, &host.name, &host.rootPath)
+	err = db.QueryRowContext(ctx, "SELECT id, name, root_path FROM hosts WHERE name = $1", hostName).Scan(&host.id, &host.name, &host.rootPath)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return fmt.Errorf("host not found: %s", hostName)
@@ -193,6 +234,9 @@ func ProcessFiles(ctx context.Context, db *sql.DB, dir string, opts FindOptions)
 	fmt.Printf("Counting files in %s...\n", dir)
 	var totalFiles int
 	err = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if err != nil {
 			log.Printf("Warning: Error accessing path %s: %v", path, err)
 			return nil
@@ -237,223 +281,169 @@ func ProcessFiles(ctx context.Context, db *sql.DB, dir string, opts FindOptions)
 		numWorkers = opts.NumWorkers
 	}
 
-	// Create worker pool
-	var wg sync.WaitGroup
+	// Establish the transaction before launching producers, so setup failure
+	// cannot leave workers blocked on a result channel with no consumer.
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	insertStmt, err := tx.PrepareContext(ctx, `INSERT INTO files (hash, path, size, mod_time, hostname)
+ VALUES ($1, $2, $3, $4, $5) ON CONFLICT (hash, path, hostname) DO UPDATE SET size = $3, mod_time = $4`)
+	if err != nil {
+		return err
+	}
+	defer insertStmt.Close()
+	checkStmt, err := tx.PrepareContext(ctx, `SELECT hash, size, mod_time FROM files WHERE path = $1 AND LOWER(hostname) = LOWER($2)`)
+	if err != nil {
+		return err
+	}
+	defer checkStmt.Close()
+	workCtx, cancel := context.WithCancel(ctx)
+	type fileResult struct {
+		path, hash string
+		size       int64
+		modTime    time.Time
+		err        error
+		duration   time.Duration
+	}
 	fileChan := make(chan string, numWorkers*2)
-	resultChan := make(chan struct {
-		path     string
-		hash     string
-		size     int64
-		modTime  time.Time
-		err      error
-		duration time.Duration
-	}, numWorkers*2)
-
-	// Start workers
+	resultChan := make(chan fileResult, numWorkers*2)
+	walkResult := make(chan error, 1)
+	walkDone := make(chan struct{})
+	var wg sync.WaitGroup
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for path := range fileChan {
-				start := time.Now()
-				hash, err := calculateFileHash(path)
-				duration := time.Since(start)
-
-				if err != nil {
-					resultChan <- struct {
-						path     string
-						hash     string
-						size     int64
-						modTime  time.Time
-						err      error
-						duration time.Duration
-					}{path: path, err: err, duration: duration}
-					continue
+			for {
+				if workCtx.Err() != nil {
+					return
 				}
-
-				// Get file info
-				info, err := os.Stat(path)
-				if err != nil {
-					resultChan <- struct {
-						path     string
-						hash     string
-						size     int64
-						modTime  time.Time
-						err      error
-						duration time.Duration
-					}{path: path, err: err, duration: duration}
-					continue
+				var path string
+				select {
+				case <-workCtx.Done():
+					return
+				case next, ok := <-fileChan:
+					if !ok {
+						return
+					}
+					path = next
 				}
-
-				resultChan <- struct {
-					path     string
-					hash     string
-					size     int64
-					modTime  time.Time
-					err      error
-					duration time.Duration
-				}{path: path, hash: hash, size: info.Size(), modTime: info.ModTime(), err: nil, duration: duration}
+				if workCtx.Err() != nil {
+					return
+				}
+				started := time.Now()
+				hash, err := calculateFileHashContext(workCtx, path)
+				result := fileResult{path: path, hash: hash, err: err, duration: time.Since(started)}
+				if err == nil {
+					info, err := os.Stat(path)
+					result.err = err
+					if err == nil {
+						result.size = info.Size()
+						result.modTime = info.ModTime()
+					}
+				}
+				select {
+				case <-workCtx.Done():
+					return
+				case resultChan <- result:
+				}
 			}
 		}()
 	}
-
-	// Start result processor
-	var processed, errors, skipped, added, updated int
+	go func() {
+		defer close(walkDone)
+		defer close(fileChan)
+		walkResult <- filepath.Walk(dir, func(path string, info os.FileInfo, walkErr error) error {
+			if err := workCtx.Err(); err != nil {
+				return err
+			}
+			if walkErr != nil {
+				log.Printf("Warning: Error accessing path %s: %v", path, walkErr)
+				return nil
+			}
+			if !info.Mode().IsRegular() || (opts.MinimumSize > 0 && info.Size() < opts.MinimumSize) {
+				return nil
+			}
+			select {
+			case <-workCtx.Done():
+				return workCtx.Err()
+			case fileChan <- path:
+				return nil
+			}
+		})
+	}()
+	workersDone := make(chan struct{})
+	go func() { wg.Wait(); close(resultChan); close(workersDone) }()
+	defer func() { cancel(); <-walkDone; <-workersDone }()
+	var processed, failed, skipped, added, updated int
 	var totalBytes int64
 	var totalDuration time.Duration
-	var resultWg sync.WaitGroup
-	resultWg.Add(1)
-	go func() {
-		defer resultWg.Done()
-
-		// Begin transaction
-		tx, err := db.Begin()
-		if err != nil {
-			log.Printf("Error starting transaction: %v", err)
-			return
+	for result := range resultChan {
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		defer tx.Rollback()
-
-		// Prepare statements
-		insertStmt, err := tx.Prepare(`
-			INSERT INTO files (hash, path, size, mod_time, hostname)
-			VALUES ($1, $2, $3, $4, $5)
-			ON CONFLICT (hash, path, hostname) DO UPDATE
-			SET size = $3, mod_time = $4
-		`)
-		if err != nil {
-			log.Printf("Error preparing insert statement: %v", err)
-			return
-		}
-		defer insertStmt.Close()
-
-		// Check if file exists in database
-		checkStmt, err := tx.Prepare(`
-			SELECT hash, size, mod_time
-			FROM files
-			WHERE path = $1 AND LOWER(hostname) = LOWER($2)
-		`)
-		if err != nil {
-			log.Printf("Error preparing check statement: %v", err)
-			return
-		}
-		defer checkStmt.Close()
-
-		for result := range resultChan {
-			processed++
-			if result.err != nil {
-				log.Printf("Error processing file %s: %v", result.path, result.err)
-				errors++
-				bar.Add(1)
-				continue
-			}
-
-			// Get relative path from root
-			relPath, err := filepath.Rel(host.rootPath, result.path)
-			if err != nil {
-				log.Printf("Error getting relative path for %s: %v", result.path, result.err)
-				errors++
-				bar.Add(1)
-				continue
-			}
-
-			// Check if file exists in database with same hash and mod time
-			var dbHash string
-			var dbSize int64
-			var dbModTime time.Time
-			err = checkStmt.QueryRow(relPath, host.name).Scan(&dbHash, &dbSize, &dbModTime)
-			if err == nil {
-				// File exists in database
-				if dbHash == result.hash && dbSize == result.size && dbModTime.Equal(result.modTime) {
-					// File hasn't changed, skip
-					skipped++
-					bar.Add(1)
-					continue
-				}
-				// File has changed, update
-				updated++
-			} else if err != sql.ErrNoRows {
-				// Error checking file
-				log.Printf("Error checking file %s: %v", relPath, err)
-				errors++
-				bar.Add(1)
-				continue
-			} else {
-				// File doesn't exist in database, add it
-				added++
-			}
-
-			// Insert or update file in database
-			_, err = insertStmt.Exec(result.hash, relPath, result.size, result.modTime, host.name)
-			if err != nil {
-				log.Printf("Error inserting file %s: %v", relPath, err)
-				errors++
-				bar.Add(1)
-				continue
-			}
-
-			totalBytes += result.size
-			totalDuration += result.duration
+		processed++
+		if result.err != nil {
+			log.Printf("Error processing file %s: %v", result.path, result.err)
+			failed++
 			bar.Add(1)
+			continue
 		}
-
-		// Commit transaction
-		if err := tx.Commit(); err != nil {
-			log.Printf("Error committing transaction: %v", err)
-			return
-		}
-	}()
-
-	// Walk directory and send files to workers
-	err = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		rel, err := filepath.Rel(host.rootPath, result.path)
 		if err != nil {
-			log.Printf("Warning: Error accessing path %s: %v", path, err)
-			return nil
+			log.Printf("Error getting relative path for %s: %v", result.path, err)
+			failed++
+			continue
 		}
-
-		// Check for context cancellation
-		select {
-		case <-ctx.Done():
+		var oldHash string
+		var oldSize int64
+		var oldTime time.Time
+		err = checkStmt.QueryRowContext(ctx, rel, host.name).Scan(&oldHash, &oldSize, &oldTime)
+		if ctx.Err() != nil {
 			return ctx.Err()
-		default:
 		}
-
-		// Skip directories
-		if info.IsDir() {
-			return nil
+		if err == nil {
+			if oldHash == result.hash && oldSize == result.size && oldTime.Equal(result.modTime) {
+				skipped++
+				bar.Add(1)
+				continue
+			}
+			updated++
+		} else if err != sql.ErrNoRows {
+			log.Printf("Error checking file %s: %v", rel, err)
+			failed++
+			continue
+		} else {
+			added++
 		}
-
-		// Skip symlinks, device files, etc.
-		if !info.Mode().IsRegular() {
-			return nil
+		_, err = insertStmt.ExecContext(ctx, result.hash, rel, result.size, result.modTime, host.name)
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
-
-		// Skip files smaller than minimum size
-		if opts.MinimumSize > 0 && info.Size() < opts.MinimumSize {
-			return nil
+		if err != nil {
+			log.Printf("Error inserting file %s: %v", rel, err)
+			failed++
+			continue
 		}
-
-		// Send file to worker
-		fileChan <- path
-		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("error walking directory: %v", err)
+		totalBytes += result.size
+		totalDuration += result.duration
+		bar.Add(1)
 	}
-
-	// Close file channel and wait for workers to finish
-	close(fileChan)
-	wg.Wait()
-	close(resultChan)
-	resultWg.Wait()
-
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := <-walkResult; err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
 	fmt.Printf("\nProcessed %d files (%s)\n", processed, formatBytes(totalBytes))
-	fmt.Printf("Added %d files, updated %d files, skipped %d files, errors %d\n", added, updated, skipped, errors)
-
+	fmt.Printf("Added %d files, updated %d files, skipped %d files, errors %d\n", added, updated, skipped, failed)
 	if totalDuration > 0 && totalBytes > 0 {
-		bytesPerSecond := float64(totalBytes) / totalDuration.Seconds()
-		fmt.Printf("Average processing speed: %s/s\n", formatBytes(int64(bytesPerSecond)))
+		fmt.Printf("Average processing speed: %s/s\n", formatBytes(int64(float64(totalBytes)/totalDuration.Seconds())))
 	}
-
 	return nil
 }

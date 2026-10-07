@@ -74,3 +74,16 @@ only the two new indexes. No file data or hash-selection rules change.
 
 `files hash` database operations honor Ctrl+C and SIGTERM. There is no new query
 time limit; file reads retain their existing inactivity timeout.
+
+### Cancelling file commands
+
+Ctrl+C or SIGTERM stops file commands without visiting the remaining candidates
+or logging cancellation as thousands of per-file failures. Database operations,
+hashing, and SSH/rsync transfers receive the command context; ordinary per-file
+errors retain their existing handling. No new automatic database timeout applies.
+
+Find, prune, and stdin ingestion roll back unfinished transactions on shutdown.
+Earlier committed batches remain. Rerunning the command processes unfinished work.
+Completed filesystem changes are retained; an interrupted copy or a completed
+move/delete whose index update was cancelled may require reindexing or pruning.
+Local filesystem system calls can finish before cancellation is observed.

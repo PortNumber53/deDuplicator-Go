@@ -254,8 +254,13 @@ func CreatePathGroup(db *sql.DB, name, description string, minCopies int, maxCop
 
 // GetPathGroup retrieves a path group by name
 func GetPathGroup(db *sql.DB, name string) (*PathGroup, error) {
+	return GetPathGroupContext(context.Background(), db, name)
+}
+
+// GetPathGroupContext supports cancellation of the lookup.
+func GetPathGroupContext(ctx context.Context, db *sql.DB, name string) (*PathGroup, error) {
 	group := &PathGroup{}
-	err := db.QueryRow(`
+	err := db.QueryRowContext(ctx, `
 		SELECT id, name, description, min_copies, max_copies, created_at
 		FROM path_groups WHERE name = $1
 	`, name).Scan(&group.ID, &group.Name, &group.Description, &group.MinCopies, &group.MaxCopies, &group.CreatedAt)
@@ -370,7 +375,12 @@ func RemovePathFromGroup(db *sql.DB, hostName, friendlyPath string) error {
 
 // ListGroupMembers returns all members of a path group
 func ListGroupMembers(db *sql.DB, groupName string) ([]PathGroupMember, error) {
-	rows, err := db.Query(`
+	return ListGroupMembersContext(context.Background(), db, groupName)
+}
+
+// ListGroupMembersContext supports cancellation of the lookup.
+func ListGroupMembersContext(ctx context.Context, db *sql.DB, groupName string) ([]PathGroupMember, error) {
+	rows, err := db.QueryContext(ctx, `
 		SELECT pgm.id, pgm.group_id, pgm.host_name, pgm.friendly_path, pgm.priority
 		FROM path_group_members pgm
 		JOIN path_groups pg ON pgm.group_id = pg.id

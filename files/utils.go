@@ -37,6 +37,9 @@ type DuplicateGroup struct {
 
 // FindDuplicateGroups finds groups of duplicate files based on the provided options
 func FindDuplicateGroups(ctx context.Context, db *sql.DB, hostname string, minSize int64, count int) ([]DuplicateGroup, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	scopedToHost := strings.TrimSpace(hostname) != ""
 	var args []interface{}
 	argCount := 0
@@ -45,12 +48,15 @@ func FindDuplicateGroups(ctx context.Context, db *sql.DB, hostname string, minSi
 	if scopedToHost {
 		// Find host in database by hostname (case-insensitive)
 		var hostName string
-		err := db.QueryRow(`
+		err := db.QueryRowContext(ctx, `
 			SELECT hostname
 			FROM hosts
 			WHERE LOWER(hostname) = LOWER($1)
 		`, hostname).Scan(&hostName)
 		if err != nil {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			if err == sql.ErrNoRows {
 				return nil, fmt.Errorf("no host found for hostname %s, please add it using 'dedupe manage add'", hostname)
 			}
@@ -110,6 +116,9 @@ func FindDuplicateGroups(ctx context.Context, db *sql.DB, hostname string, minSi
 	// Query duplicate groups
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		return nil, fmt.Errorf("error querying duplicates: %v", err)
 	}
 	defer rows.Close()
@@ -121,10 +130,16 @@ func FindDuplicateGroups(ctx context.Context, db *sql.DB, hostname string, minSi
 	var groups []DuplicateGroup
 
 	for rows.Next() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		var hash, path, hostname string
 		var size int64
 
 		if err := rows.Scan(&hash, &path, &hostname, &size); err != nil {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			return nil, fmt.Errorf("error scanning row: %v", err)
 		}
 
@@ -152,6 +167,9 @@ func FindDuplicateGroups(ctx context.Context, db *sql.DB, hostname string, minSi
 	}
 
 	if err := rows.Err(); err != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		return nil, fmt.Errorf("error iterating rows: %v", err)
 	}
 
@@ -160,20 +178,34 @@ func FindDuplicateGroups(ctx context.Context, db *sql.DB, hostname string, minSi
 
 // PrintDuplicateGroups prints the duplicate groups in a formatted way
 func PrintDuplicateGroups(groups []DuplicateGroup) int64 {
+	total, _ := printDuplicateGroupsContext(context.Background(), groups)
+	return total
+}
+
+func printDuplicateGroupsContext(ctx context.Context, groups []DuplicateGroup) (int64, error) {
+	if ctx.Err() != nil {
+		return 0, ctx.Err()
+	}
 	if len(groups) == 0 {
 		fmt.Println("No duplicate files found.")
-		return 0
+		return 0, nil
 	}
 
 	var totalSavings int64
 	fmt.Printf("Found %d groups of duplicate files:\n\n", len(groups))
 	for _, group := range groups {
+		if ctx.Err() != nil {
+			return totalSavings, ctx.Err()
+		}
 		// Print duplicate group with colors
 		fmt.Printf("\033[33mHash: %s\033[0m\n", group.Hash)
 		fmt.Printf("Size: %s bytes\n", formatBytes(group.Size))
 		fmt.Printf("Duplicates: %d files\n", len(group.Files))
 		fmt.Println("Files:")
 		for i, file := range group.Files {
+			if ctx.Err() != nil {
+				return totalSavings, ctx.Err()
+			}
 			fmt.Printf("\033[90m  %s (%s)\033[0m\n",
 				file,
 				group.Hosts[i])
@@ -185,7 +217,7 @@ func PrintDuplicateGroups(groups []DuplicateGroup) int64 {
 	}
 
 	fmt.Printf("\nTotal potential space savings: %s bytes\n", formatBytes(totalSavings))
-	return totalSavings
+	return totalSavings, nil
 }
 
 // formatBytes formats a byte count with thousand separators

@@ -36,7 +36,11 @@ func pruneFullPath(dbPath string, rootFolder sql.NullString) (string, bool) {
 }
 
 // PruneNonExistentFiles removes entries for files that no longer exist
-func PruneNonExistentFiles(ctx context.Context, sqldb *sql.DB, opts PruneOptions) error {
+func PruneNonExistentFiles(ctx context.Context, sqldb *sql.DB, opts PruneOptions) (resultErr error) {
+	defer cancellationResult(ctx, &resultErr)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	startTime := time.Now()
 
 	batchSize := opts.BatchSize
@@ -47,6 +51,9 @@ func PruneNonExistentFiles(ctx context.Context, sqldb *sql.DB, opts PruneOptions
 	// Get hostname for current machine
 	hostname, err := os.Hostname()
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return fmt.Errorf("error getting hostname: %v", err)
 	}
 
@@ -55,8 +62,11 @@ func PruneNonExistentFiles(ctx context.Context, sqldb *sql.DB, opts PruneOptions
 	logging.InfoLogger.Printf("Looking up host for hostname: %s", hostname)
 
 	// Get host information and all paths (case-insensitive hostname lookup)
-	host, err := db.GetHostByHostname(sqldb, hostname)
+	host, err := db.GetHostByHostnameContext(ctx, sqldb, hostname)
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return fmt.Errorf("error fetching host: %v", err)
 	}
 
@@ -65,8 +75,11 @@ func PruneNonExistentFiles(ctx context.Context, sqldb *sql.DB, opts PruneOptions
 	// First, count total files to check - use case-insensitive comparison
 	var totalFiles int
 	countQuery := "SELECT COUNT(*) FROM files WHERE LOWER(hostname) = LOWER($1)" + getRowLimitClause()
-	err = sqldb.QueryRow(countQuery, host.Hostname).Scan(&totalFiles)
+	err = sqldb.QueryRowContext(ctx, countQuery, host.Hostname).Scan(&totalFiles)
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return fmt.Errorf("error counting files: %v", err)
 	}
 	fmt.Printf("Found %d files to check in the database (limited for quick iteration)\n", totalFiles)
@@ -78,15 +91,21 @@ func PruneNonExistentFiles(ctx context.Context, sqldb *sql.DB, opts PruneOptions
 
 	// Get files for this host - use case-insensitive comparison
 	query := "SELECT id, path, root_folder FROM files WHERE LOWER(hostname) = LOWER($1) ORDER BY LENGTH(COALESCE(root_folder, '')) DESC, id ASC" + getRowLimitClause()
-	rows, err := sqldb.Query(query, host.Hostname)
+	rows, err := sqldb.QueryContext(ctx, query, host.Hostname)
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return fmt.Errorf("error querying files: %v", err)
 	}
 	defer rows.Close()
 
 	// Begin transaction for batch deletes
-	tx, err := sqldb.Begin()
+	tx, err := sqldb.BeginTx(ctx, nil)
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return fmt.Errorf("error starting transaction: %v", err)
 	}
 	defer func() {
@@ -94,8 +113,11 @@ func PruneNonExistentFiles(ctx context.Context, sqldb *sql.DB, opts PruneOptions
 	}()
 
 	// Prepare delete statement
-	stmt, err := tx.Prepare(`DELETE FROM files WHERE id = $1`)
+	stmt, err := tx.PrepareContext(ctx, `DELETE FROM files WHERE id = $1`)
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return fmt.Errorf("error preparing statement: %v", err)
 	}
 	defer stmt.Close()
@@ -112,6 +134,9 @@ func PruneNonExistentFiles(ctx context.Context, sqldb *sql.DB, opts PruneOptions
 	var checked int
 	seenFullPaths := make(map[string]int, totalFiles)
 	for rows.Next() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		select {
 		case <-ctx.Done():
 			fmt.Printf("\nOperation cancelled after processing %d files\n", checked)
@@ -123,6 +148,9 @@ func PruneNonExistentFiles(ctx context.Context, sqldb *sql.DB, opts PruneOptions
 		var rootFolder sql.NullString
 		err := rows.Scan(&id, &dbPath, &rootFolder)
 		if err != nil {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			logging.ErrorLogger.Printf("Warning: Error scanning row: %v", err)
 			continue
 		}
@@ -135,8 +163,11 @@ func PruneNonExistentFiles(ctx context.Context, sqldb *sql.DB, opts PruneOptions
 
 		fullPath, validRoot := pruneFullPath(dbPath, rootFolder)
 		if !validRoot {
-			_, err = stmt.Exec(id)
+			_, err = stmt.ExecContext(ctx, id)
 			if err != nil {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 				logging.ErrorLogger.Printf("Warning: Error deleting file with missing root_folder %s: %v", dbPath, err)
 				bar.Add(1)
 				continue
@@ -146,15 +177,24 @@ func PruneNonExistentFiles(ctx context.Context, sqldb *sql.DB, opts PruneOptions
 			logging.InfoLogger.Printf("Deleted entry for file missing root_folder: %s", dbPath)
 			if batchDeletes >= batchSize {
 				if err := tx.Commit(); err != nil {
+					if err := ctx.Err(); err != nil {
+						return err
+					}
 					return fmt.Errorf("error committing transaction: %v", err)
 				}
 				logging.InfoLogger.Printf("Committed batch of %d deletions", batchDeletes)
-				tx, err = sqldb.Begin()
+				tx, err = sqldb.BeginTx(ctx, nil)
 				if err != nil {
+					if err := ctx.Err(); err != nil {
+						return err
+					}
 					return fmt.Errorf("error starting new transaction: %v", err)
 				}
-				stmt, err = tx.Prepare(`DELETE FROM files WHERE id = $1`)
+				stmt, err = tx.PrepareContext(ctx, `DELETE FROM files WHERE id = $1`)
 				if err != nil {
+					if err := ctx.Err(); err != nil {
+						return err
+					}
 					return fmt.Errorf("error preparing statement: %v", err)
 				}
 				batchDeletes = 0
@@ -165,8 +205,11 @@ func PruneNonExistentFiles(ctx context.Context, sqldb *sql.DB, opts PruneOptions
 
 		cleanFullPath := filepath.Clean(fullPath)
 		if firstID, seen := seenFullPaths[cleanFullPath]; seen {
-			_, err = stmt.Exec(id)
+			_, err = stmt.ExecContext(ctx, id)
 			if err != nil {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 				logging.ErrorLogger.Printf("Warning: Error deleting duplicate path row %s: %v", dbPath, err)
 				bar.Add(1)
 				continue
@@ -176,15 +219,24 @@ func PruneNonExistentFiles(ctx context.Context, sqldb *sql.DB, opts PruneOptions
 			logging.InfoLogger.Printf("Deleted duplicate DB row for %s; keeping row id %d", cleanFullPath, firstID)
 			if batchDeletes >= batchSize {
 				if err := tx.Commit(); err != nil {
+					if err := ctx.Err(); err != nil {
+						return err
+					}
 					return fmt.Errorf("error committing transaction: %v", err)
 				}
 				logging.InfoLogger.Printf("Committed batch of %d deletions", batchDeletes)
-				tx, err = sqldb.Begin()
+				tx, err = sqldb.BeginTx(ctx, nil)
 				if err != nil {
+					if err := ctx.Err(); err != nil {
+						return err
+					}
 					return fmt.Errorf("error starting new transaction: %v", err)
 				}
-				stmt, err = tx.Prepare(`DELETE FROM files WHERE id = $1`)
+				stmt, err = tx.PrepareContext(ctx, `DELETE FROM files WHERE id = $1`)
 				if err != nil {
+					if err := ctx.Err(); err != nil {
+						return err
+					}
 					return fmt.Errorf("error preparing statement: %v", err)
 				}
 				batchDeletes = 0
@@ -196,9 +248,15 @@ func PruneNonExistentFiles(ctx context.Context, sqldb *sql.DB, opts PruneOptions
 
 		fileInfo, err := os.Lstat(fullPath)
 		if err != nil {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			// Could not stat the file for any reason – treat as non-existent
-			_, err = stmt.Exec(id)
+			_, err = stmt.ExecContext(ctx, id)
 			if err != nil {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 				logging.ErrorLogger.Printf("Warning: Error deleting file %s: %v", dbPath, err)
 				bar.Add(1)
 				continue
@@ -208,15 +266,24 @@ func PruneNonExistentFiles(ctx context.Context, sqldb *sql.DB, opts PruneOptions
 			logging.InfoLogger.Printf("Deleted entry for non-existent or invalid file: %s", dbPath)
 			if batchDeletes >= batchSize {
 				if err := tx.Commit(); err != nil {
+					if err := ctx.Err(); err != nil {
+						return err
+					}
 					return fmt.Errorf("error committing transaction: %v", err)
 				}
 				logging.InfoLogger.Printf("Committed batch of %d deletions", batchDeletes)
-				tx, err = sqldb.Begin()
+				tx, err = sqldb.BeginTx(ctx, nil)
 				if err != nil {
+					if err := ctx.Err(); err != nil {
+						return err
+					}
 					return fmt.Errorf("error starting new transaction: %v", err)
 				}
-				stmt, err = tx.Prepare(`DELETE FROM files WHERE id = $1`)
+				stmt, err = tx.PrepareContext(ctx, `DELETE FROM files WHERE id = $1`)
 				if err != nil {
+					if err := ctx.Err(); err != nil {
+						return err
+					}
 					return fmt.Errorf("error preparing statement: %v", err)
 				}
 				batchDeletes = 0
@@ -228,8 +295,11 @@ func PruneNonExistentFiles(ctx context.Context, sqldb *sql.DB, opts PruneOptions
 		// Check for symlinks
 		if fileInfo.Mode()&os.ModeSymlink != 0 {
 			// Delete symlinks from database
-			_, err = stmt.Exec(id)
+			_, err = stmt.ExecContext(ctx, id)
 			if err != nil {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 				logging.ErrorLogger.Printf("Warning: Error deleting symlink %s: %v", dbPath, err)
 				continue
 			}
@@ -238,15 +308,24 @@ func PruneNonExistentFiles(ctx context.Context, sqldb *sql.DB, opts PruneOptions
 			logging.InfoLogger.Printf("Deleted entry for symlink: %s", fullPath)
 			if batchDeletes >= batchSize {
 				if err := tx.Commit(); err != nil {
+					if err := ctx.Err(); err != nil {
+						return err
+					}
 					return fmt.Errorf("error committing transaction: %v", err)
 				}
 				logging.InfoLogger.Printf("Committed batch of %d deletions", batchDeletes)
-				tx, err = sqldb.Begin()
+				tx, err = sqldb.BeginTx(ctx, nil)
 				if err != nil {
+					if err := ctx.Err(); err != nil {
+						return err
+					}
 					return fmt.Errorf("error starting new transaction: %v", err)
 				}
-				stmt, err = tx.Prepare(`DELETE FROM files WHERE id = $1`)
+				stmt, err = tx.PrepareContext(ctx, `DELETE FROM files WHERE id = $1`)
 				if err != nil {
+					if err := ctx.Err(); err != nil {
+						return err
+					}
 					return fmt.Errorf("error preparing statement: %v", err)
 				}
 				batchDeletes = 0
@@ -256,8 +335,11 @@ func PruneNonExistentFiles(ctx context.Context, sqldb *sql.DB, opts PruneOptions
 		// Check for device files, pipes, sockets, etc.
 		if fileInfo.Mode()&(os.ModeDevice|os.ModeCharDevice|os.ModeNamedPipe|os.ModeSocket) != 0 {
 			// Delete device files from database
-			_, err = stmt.Exec(id)
+			_, err = stmt.ExecContext(ctx, id)
 			if err != nil {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 				logging.ErrorLogger.Printf("Warning: Error deleting device file %s: %v", dbPath, err)
 				continue
 			}
@@ -266,15 +348,24 @@ func PruneNonExistentFiles(ctx context.Context, sqldb *sql.DB, opts PruneOptions
 			logging.InfoLogger.Printf("Deleted entry for device file: %s", fullPath)
 			if batchDeletes >= batchSize {
 				if err := tx.Commit(); err != nil {
+					if err := ctx.Err(); err != nil {
+						return err
+					}
 					return fmt.Errorf("error committing transaction: %v", err)
 				}
 				logging.InfoLogger.Printf("Committed batch of %d deletions", batchDeletes)
-				tx, err = sqldb.Begin()
+				tx, err = sqldb.BeginTx(ctx, nil)
 				if err != nil {
+					if err := ctx.Err(); err != nil {
+						return err
+					}
 					return fmt.Errorf("error starting new transaction: %v", err)
 				}
-				stmt, err = tx.Prepare(`DELETE FROM files WHERE id = $1`)
+				stmt, err = tx.PrepareContext(ctx, `DELETE FROM files WHERE id = $1`)
 				if err != nil {
+					if err := ctx.Err(); err != nil {
+						return err
+					}
 					return fmt.Errorf("error preparing statement: %v", err)
 				}
 				batchDeletes = 0
@@ -285,17 +376,26 @@ func PruneNonExistentFiles(ctx context.Context, sqldb *sql.DB, opts PruneOptions
 	}
 
 	if err := rows.Err(); err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return fmt.Errorf("error iterating rows: %v", err)
 	}
 
 	// Commit any remaining deletions
 	if batchDeletes > 0 {
 		if err := tx.Commit(); err != nil {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			return fmt.Errorf("error committing final transaction: %v", err)
 		}
 		logging.InfoLogger.Printf("Committed final batch of %d deletions", batchDeletes)
 	}
 
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	elapsed := time.Since(startTime)
 	fmt.Printf("\nChecked %d files in total\n", checked)
 	fmt.Printf("Removed %d entries for non-existent files\n", removedNonexistent)

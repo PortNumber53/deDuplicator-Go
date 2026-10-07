@@ -184,9 +184,6 @@ func TestPruneCancellationStopsMidRun(t *testing.T) {
 	mock.ExpectBegin()
 	prep := mock.ExpectPrepare(`DELETE FROM files`)
 	prep.ExpectExec().WithArgs(1).WillDelayFor(10 * time.Millisecond).WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectCommit()
-	mock.ExpectBegin()
-	mock.ExpectPrepare(`DELETE FROM files`)
 	mock.ExpectRollback()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
@@ -196,7 +193,15 @@ func TestPruneCancellationStopsMidRun(t *testing.T) {
 		t.Fatalf("expected cancellation error")
 	}
 
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("unmet expectations: %v", err)
+	deadline := time.Now().Add(time.Second)
+	for {
+		err := mock.ExpectationsWereMet()
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal(err)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }

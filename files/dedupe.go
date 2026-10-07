@@ -13,7 +13,11 @@ import (
 )
 
 // DedupFiles deduplicates files by moving them to a destination directory
-func DedupFiles(ctx context.Context, db *sql.DB, opts DedupeOptions) error {
+func DedupFiles(ctx context.Context, db *sql.DB, opts DedupeOptions) (resultErr error) {
+	defer cancellationResult(ctx, &resultErr)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	// Check if the destination directory is valid
 	if opts.DestDir == "" {
 		return fmt.Errorf("destination directory cannot be empty")
@@ -27,7 +31,13 @@ func DedupFiles(ctx context.Context, db *sql.DB, opts DedupeOptions) error {
 
 	// Ensure destination directory exists
 	if !opts.DryRun {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := os.MkdirAll(opts.DestDir, 0755); err != nil {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			return fmt.Errorf("error creating destination directory: %v", err)
 		}
 	}
@@ -35,6 +45,9 @@ func DedupFiles(ctx context.Context, db *sql.DB, opts DedupeOptions) error {
 	// Get hostname for current machine
 	hostname, err := os.Hostname()
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return fmt.Errorf("error getting hostname: %v", err)
 	}
 
@@ -44,17 +57,23 @@ func DedupFiles(ctx context.Context, db *sql.DB, opts DedupeOptions) error {
 	// Find duplicate groups
 	groups, err := FindDuplicateGroups(ctx, db, hostname, opts.MinSize, opts.Count)
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return err
 	}
 
 	// Get root path for current host
 	var rootPath string
-	err = db.QueryRow(`
+	err = db.QueryRowContext(ctx, `
 		SELECT root_path 
 		FROM hosts 
 		WHERE LOWER(name) = LOWER($1)
 	`, hostname).Scan(&rootPath)
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return fmt.Errorf("error getting root path: %v", err)
 	}
 
@@ -69,10 +88,16 @@ func DedupFiles(ctx context.Context, db *sql.DB, opts DedupeOptions) error {
 
 	fmt.Printf("Found %d groups of duplicate files:\n\n", len(groups))
 	for _, group := range groups {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		// Skip if any file is in destination directory
 		if opts.IgnoreDestDir {
 			inDest := false
 			for _, path := range group.Files {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 				if strings.HasPrefix(path, opts.DestDir) {
 					inDest = true
 					break
@@ -89,6 +114,9 @@ func DedupFiles(ctx context.Context, db *sql.DB, opts DedupeOptions) error {
 		fmt.Printf("Duplicates: %d files\n", len(group.Files))
 		fmt.Println("Files:")
 		for i := range group.Files {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			fmt.Printf("\033[90m  %s (%s)\033[0m\n",
 				group.Files[i],
 				group.Hosts[i])
@@ -100,7 +128,10 @@ func DedupFiles(ctx context.Context, db *sql.DB, opts DedupeOptions) error {
 
 		// Process the group for deduplication if not in dry run mode
 		if !opts.DryRun {
-			if err := deduplicateGroup(group, rootPath, opts, db); err != nil {
+			if err := deduplicateGroupContext(ctx, group, rootPath, opts, db); err != nil {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 				return fmt.Errorf("error deduplicating group with hash %s: %v", group.Hash, err)
 			}
 		}
@@ -121,6 +152,14 @@ func DedupFiles(ctx context.Context, db *sql.DB, opts DedupeOptions) error {
 
 // deduplicateGroup handles the deduplication of a single group of duplicate files
 func deduplicateGroup(group DuplicateGroup, rootPath string, opts DedupeOptions, db *sql.DB) error {
+	return deduplicateGroupContext(context.Background(), group, rootPath, opts, db)
+}
+
+func deduplicateGroupContext(ctx context.Context, group DuplicateGroup, rootPath string, opts DedupeOptions, db *sql.DB) (resultErr error) {
+	defer cancellationResult(ctx, &resultErr)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if len(group.Files) < 2 {
 		return nil // Nothing to deduplicate
 	}
@@ -135,11 +174,17 @@ func deduplicateGroup(group DuplicateGroup, rootPath string, opts DedupeOptions,
 
 	// Count files in parent directories
 	for i, path := range group.Files {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		// Construct full path by joining root path and relative path
 		fullPath := filepath.Join(rootPath, path)
 		parentDir := filepath.Dir(fullPath)
 		entries, err := os.ReadDir(parentDir)
 		if err != nil {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			// If directory doesn't exist, assign count of 0
 			log.Printf("Warning: Could not read directory %s: %v", parentDir, err)
 			files[i] = fileInfo{
@@ -153,6 +198,9 @@ func deduplicateGroup(group DuplicateGroup, rootPath string, opts DedupeOptions,
 		// Count only files (not directories)
 		fileCount := 0
 		for _, entry := range entries {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if !entry.IsDir() {
 				fileCount++
 			}
@@ -180,6 +228,9 @@ func deduplicateGroup(group DuplicateGroup, rootPath string, opts DedupeOptions,
 
 	// Move all files except the last one (which is from the most populated directory)
 	for i := 0; i < len(files)-1; i++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		sourcePath := filepath.Join(rootPath, files[i].path)
 
 		// Skip if source file doesn't exist
@@ -202,20 +253,35 @@ func deduplicateGroup(group DuplicateGroup, rootPath string, opts DedupeOptions,
 			sourcePath, files[i].host, files[i].parentDirCount, targetPath)
 
 		// Create target directory
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := os.MkdirAll(targetDir, 0755); err != nil {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			return fmt.Errorf("error creating directory %s: %v", targetDir, err)
 		}
 
 		// Move the file using rsync to handle cross-filesystem moves
 		// First try with os.Rename for efficiency (same filesystem)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		err := os.Rename(sourcePath, targetPath)
 		if err != nil {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			// If rename fails due to cross-device link, use rsync
 			if strings.Contains(err.Error(), "invalid cross-device link") {
 				// Use rsync to copy the file
-				cmd := exec.Command("rsync", "-a", "--remove-source-files", sourcePath, targetPath)
+				cmd := exec.CommandContext(ctx, "rsync", "-a", "--remove-source-files", sourcePath, targetPath)
 				output, err := cmd.CombinedOutput()
 				if err != nil {
+					if err := ctx.Err(); err != nil {
+						return err
+					}
 					return fmt.Errorf("error moving file %s with rsync: %v\nOutput: %s", sourcePath, err, output)
 				}
 			} else {
@@ -225,13 +291,16 @@ func deduplicateGroup(group DuplicateGroup, rootPath string, opts DedupeOptions,
 		}
 
 		// Delete the file from the database
-		_, err = db.Exec(`
+		_, err = db.ExecContext(ctx, `
 			DELETE FROM files
 			WHERE path = $1 AND host_id = (
 				SELECT id FROM hosts WHERE LOWER(hostname) = LOWER($2)
 			)
 		`, files[i].path, files[i].host)
 		if err != nil {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			log.Printf("Warning: Failed to delete file %s from database: %v", files[i].path, err)
 		}
 	}

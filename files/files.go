@@ -16,59 +16,60 @@ import (
 
 // calculateFileHash computes the SHA-256 hash of a full file.
 func calculateFileHash(filePath string) (string, error) {
-	// Create a channel to communicate the result and progress
-	resultCh := make(chan struct {
+	return calculateFileHashContext(context.Background(), filePath)
+}
+
+func calculateFileHashContext(ctx context.Context, filePath string) (string, error) {
+	return calculateFileHashWithTimeout(ctx, filePath, time.Minute)
+}
+
+// The inactivity deadline remains separate from command cancellation: only
+// inactivity marks a file as timed out. A blocked kernel read may finish later.
+func calculateFileHashWithTimeout(parent context.Context, filePath string, timeout time.Duration) (string, error) {
+	return runFileHash(parent, filePath, timeout, calculateFileHashInternal)
+}
+
+func runFileHash(parent context.Context, filePath string, timeout time.Duration, readHash func(context.Context, string, chan struct{}) (string, error)) (string, error) {
+	if err := parent.Err(); err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+	type result struct {
 		hash string
 		err  error
-	}, 1)
-
-	// Create a context with cancellation for manual control
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Create a channel to track progress
-	progressCh := make(chan struct{}, 1)
-
-	// Start a goroutine to monitor progress and implement timeout
+	}
+	results := make(chan result, 1)
+	progress := make(chan struct{}, 1)
 	go func() {
-		timeout := 1 * time.Minute
-		timer := time.NewTimer(timeout)
-		defer timer.Stop()
-
-		for {
-			select {
-			case <-progressCh:
-				// Progress was made, reset the timer
-				if !timer.Stop() {
-					<-timer.C // Drain the channel if timer already fired
-				}
-				timer.Reset(timeout)
-			case <-timer.C:
-				// Timeout occurred with no progress
-				cancel() // Cancel the context to stop the hashing
-				return
-			case <-ctx.Done():
-				// Context was cancelled elsewhere or operation completed
-				return
+		hash, err := readHash(ctx, filePath, progress)
+		results <- result{hash, err}
+	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for {
+		select {
+		case <-parent.Done():
+			return "", parent.Err()
+		case r := <-results:
+			if err := parent.Err(); err != nil {
+				return "", err
 			}
+			return r.hash, r.err
+		case <-progress:
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(timeout)
+		case <-timer.C:
+			if err := parent.Err(); err != nil {
+				return "", err
+			}
+			return "", fmt.Errorf("hashing timed out after %s of inactivity for file: %s", timeout, filePath)
 		}
-	}()
-
-	// Run the hashing in a goroutine
-	go func() {
-		hash, err := calculateFileHashInternal(ctx, filePath, progressCh)
-		resultCh <- struct {
-			hash string
-			err  error
-		}{hash, err}
-	}()
-
-	// Wait for the result
-	select {
-	case result := <-resultCh:
-		return result.hash, result.err
-	case <-ctx.Done():
-		return "", fmt.Errorf("hashing timed out after 1 minute of inactivity for file: %s", filePath)
 	}
 }
 

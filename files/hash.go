@@ -346,7 +346,7 @@ func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) (resultErr 
 			logging.InfoLogger.Printf("Hashing file: %s", filepath.Base(dbPath))
 
 			// Calculate hash - this will block until the hash is complete or times out
-			hash, err := calculateFileHash(fullPath)
+			hash, err := calculateFileHashContext(ctx, fullPath)
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
@@ -423,7 +423,7 @@ func HashFiles(ctx context.Context, sqldb *sql.DB, opts HashOptions) (resultErr 
 func ListProblematicFiles(ctx context.Context, db *sql.DB, hostname string) error {
 	// Get host information
 	var rootPath string
-	err := db.QueryRow(`
+	err := db.QueryRowContext(ctx, `
 		SELECT root_path
 		FROM hosts
 		WHERE LOWER(name) = LOWER($1)

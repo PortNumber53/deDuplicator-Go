@@ -32,10 +32,17 @@ type conflictEntry struct {
 }
 
 // MirrorFriendlyPath syncs files across all hosts that have the same friendly path registered.
-func MirrorFriendlyPath(ctx context.Context, db *sql.DB, friendlyPath string) error {
+func MirrorFriendlyPath(ctx context.Context, db *sql.DB, friendlyPath string) (resultErr error) {
+	defer cancellationResult(ctx, &resultErr)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	// 1. Find all hosts with the friendly path
-	hosts, err := getHostsForFriendlyPath(db, friendlyPath)
+	hosts, err := getHostsForFriendlyPathContext(ctx, db, friendlyPath)
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return fmt.Errorf("error fetching hosts for friendly path: %w", err)
 	}
 	if len(hosts) < 2 {
@@ -46,12 +53,21 @@ func MirrorFriendlyPath(ctx context.Context, db *sql.DB, friendlyPath string) er
 	hostFiles := make(map[string]map[string]string) // hostname -> relpath -> hash
 	allRelPaths := map[string]struct{}{}
 	for _, h := range hosts {
-		files, err := getFilesForHostPath(db, h)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		files, err := getFilesForHostPathContext(ctx, db, h)
 		if err != nil {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			return fmt.Errorf("error fetching files for host %s: %w", h.Hostname, err)
 		}
 		hostFiles[h.Hostname] = files
 		for rel := range files {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			allRelPaths[rel] = struct{}{}
 		}
 	}
@@ -69,9 +85,15 @@ func MirrorFriendlyPath(ctx context.Context, db *sql.DB, friendlyPath string) er
 	}
 	var tasks []transferTask
 	for relPath := range allRelPaths {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		present := map[string]string{} // hostname -> hash
 		missing := []hostPath{}
 		for _, h := range hosts {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			hash, ok := hostFiles[h.Hostname][relPath]
 			if ok {
 				present[h.Hostname] = hash
@@ -82,12 +104,18 @@ func MirrorFriendlyPath(ctx context.Context, db *sql.DB, friendlyPath string) er
 		// Check for hash conflicts
 		hashSet := map[string]struct{}{}
 		for _, hash := range present {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			hashSet[hash] = struct{}{}
 		}
 		if len(hashSet) > 1 {
 			// Conflict: different hashes for same relPath
 			var hostsList, hashesList []string
 			for host, hash := range present {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 				hostsList = append(hostsList, host)
 				hashesList = append(hashesList, hash)
 			}
@@ -105,18 +133,27 @@ func MirrorFriendlyPath(ctx context.Context, db *sql.DB, friendlyPath string) er
 		// All present hashes are the same
 		var hashVal string
 		for _, v := range present {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			hashVal = v
 			break
 		}
 		// Pick a source host (first present)
 		var srcHost hostPath
 		for _, h := range hosts {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if _, ok := present[h.Hostname]; ok {
 				srcHost = h
 				break
 			}
 		}
 		for _, dst := range missing {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			tasks = append(tasks, transferTask{
 				relPath: relPath,
 				srcHost: srcHost,
@@ -130,6 +167,9 @@ func MirrorFriendlyPath(ctx context.Context, db *sql.DB, friendlyPath string) er
 		progressbar.OptionSetWidth(15))
 
 	for _, task := range tasks {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		relPath := task.relPath
 		srcHost := task.srcHost
 		dst := task.dstHost
@@ -138,6 +178,9 @@ func MirrorFriendlyPath(ctx context.Context, db *sql.DB, friendlyPath string) er
 		absDst := strings.TrimRight(dst.AbsPath, "/") + "/" + relPath
 		cmd := exec.CommandContext(ctx, "ssh", dst.Hostname, "test", "-e", absDst)
 		err := cmd.Run()
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if err == nil {
 			// File exists on disk but not in DB: log conflict
 			conflicts = append(conflicts, conflictEntry{
@@ -154,6 +197,9 @@ func MirrorFriendlyPath(ctx context.Context, db *sql.DB, friendlyPath string) er
 		mkdirCmd := exec.CommandContext(ctx, "ssh", dst.Hostname, "mkdir", "-p", parentDir)
 		logging.InfoLogger.Printf("Ensuring directory on %s: %s", dst.Hostname, parentDir)
 		if mkErr := mkdirCmd.Run(); mkErr != nil {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			logging.ErrorLogger.Printf("Failed to create parent directory on %s: %v", dst.Hostname, mkErr)
 			conflicts = append(conflicts, conflictEntry{
 				RelPath: relPath,
@@ -177,6 +223,9 @@ func MirrorFriendlyPath(ctx context.Context, db *sql.DB, friendlyPath string) er
 			copyCmd := exec.CommandContext(ctx, "rsync", srcAbs, dst.Hostname+":"+dstAbs)
 			copyErr := copyCmd.Run()
 			if copyErr != nil {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 				conflicts = append(conflicts, conflictEntry{
 					RelPath: relPath,
 					Hosts:   []string{srcHost.Hostname, dst.Hostname},
@@ -196,6 +245,9 @@ func MirrorFriendlyPath(ctx context.Context, db *sql.DB, friendlyPath string) er
 			pullCmd := exec.CommandContext(ctx, "rsync", srcHost.Hostname+":"+srcAbs, tmpPath)
 			pullErr := pullCmd.Run()
 			if pullErr != nil {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 				conflicts = append(conflicts, conflictEntry{
 					RelPath: relPath,
 					Hosts:   []string{srcHost.Hostname, dst.Hostname},
@@ -211,6 +263,9 @@ func MirrorFriendlyPath(ctx context.Context, db *sql.DB, friendlyPath string) er
 			pushCmd := exec.CommandContext(ctx, "rsync", tmpPath, dst.Hostname+":"+dstAbs)
 			pushErr := pushCmd.Run()
 			if pushErr != nil {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 				conflicts = append(conflicts, conflictEntry{
 					RelPath: relPath,
 					Hosts:   []string{srcHost.Hostname, dst.Hostname},
@@ -219,16 +274,25 @@ func MirrorFriendlyPath(ctx context.Context, db *sql.DB, friendlyPath string) er
 				})
 			} else {
 				// Cleanup
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 				_ = os.Remove(tmpPath)
 				copies = append(copies, fmt.Sprintf("%s -> %s: %s", srcHost.Hostname, dst.Hostname, relPath))
 			}
 			_ = bar.Add(1)
 		}
 	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	// Log summary
 	if len(copies) > 0 {
 		logging.InfoLogger.Printf("Files copied:")
 		for _, c := range copies {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			logging.InfoLogger.Printf("%s", c)
 		}
 	} else {
@@ -237,6 +301,9 @@ func MirrorFriendlyPath(ctx context.Context, db *sql.DB, friendlyPath string) er
 	if len(conflicts) > 0 {
 		logging.ErrorLogger.Printf("Conflicts:")
 		for _, conf := range conflicts {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			logging.ErrorLogger.Printf("%s: %s | hosts: %v | hashes: %v", conf.RelPath, conf.Reason, conf.Hosts, conf.Hashes)
 		}
 	} else {
@@ -247,22 +314,41 @@ func MirrorFriendlyPath(ctx context.Context, db *sql.DB, friendlyPath string) er
 
 // getHostsForFriendlyPath returns hosts and the absolute path for the friendly path
 func getHostsForFriendlyPath(db *sql.DB, friendlyPath string) ([]hostPath, error) {
-	rows, err := db.Query("SELECT name, hostname, root_path, settings FROM hosts")
+	return getHostsForFriendlyPathContext(context.Background(), db, friendlyPath)
+}
+
+func getHostsForFriendlyPathContext(ctx context.Context, db *sql.DB, friendlyPath string) ([]hostPath, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	rows, err := db.QueryContext(ctx, "SELECT name, hostname, root_path, settings FROM hosts")
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		return nil, err
 	}
 	defer rows.Close()
 	var result []hostPath
 	for rows.Next() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		var name, hostname, rootPath string
 		var settingsRaw []byte
 		if err := rows.Scan(&name, &hostname, &rootPath, &settingsRaw); err != nil {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			return nil, err
 		}
 		var settings struct {
 			Paths map[string]string `json:"paths"`
 		}
 		if err := json.Unmarshal(settingsRaw, &settings); err != nil {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			continue // skip hosts with bad json
 		}
 		abs, ok := settings.Paths[friendlyPath]
@@ -280,16 +366,32 @@ func getHostsForFriendlyPath(db *sql.DB, friendlyPath string) ([]hostPath, error
 
 // getFilesForHostPath returns relative path -> hash for a given host/path
 func getFilesForHostPath(db *sql.DB, h hostPath) (map[string]string, error) {
+	return getFilesForHostPathContext(context.Background(), db, h)
+}
+
+func getFilesForHostPathContext(ctx context.Context, db *sql.DB, h hostPath) (map[string]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	q := `SELECT path, hash FROM files WHERE hostname = $1 AND root_folder = $2 AND hash IS NOT NULL`
-	rows, err := db.Query(q, h.Hostname, h.AbsPath)
+	rows, err := db.QueryContext(ctx, q, h.Hostname, h.AbsPath)
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		return nil, err
 	}
 	defer rows.Close()
 	result := make(map[string]string)
 	for rows.Next() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		var path, hash string
 		if err := rows.Scan(&path, &hash); err != nil {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			return nil, err
 		}
 		result[path] = hash

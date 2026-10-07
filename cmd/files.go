@@ -27,7 +27,15 @@ func (f *repeatedStringFlag) Set(value string) error {
 }
 
 // HandleFiles handles file-related commands
-func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
+func HandleFiles(ctx context.Context, database *sql.DB, args []string) (resultErr error) {
+	defer func() {
+		if ctx.Err() != nil {
+			resultErr = ctx.Err()
+		}
+	}()
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	var err error
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" {
 		cmd := FindCommand("files")
@@ -51,6 +59,9 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 		importAge := importCmd.Int("age", 0, "Only import files older than this many minutes")
 		err = importCmd.Parse(args[1:])
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			return fmt.Errorf("error parsing command flags: %v", err)
 		}
 		if *sourcePath == "" || *serverName == "" || *friendlyPath == "" {
@@ -82,6 +93,9 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 			Age:          *importAge,
 		})
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			fmt.Printf("Import error: %v\n", err)
 		}
 		return err
@@ -91,11 +105,17 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 		pruneBatchSize := pruneCmd.Int("batch-size", 0, "Number of deletions per transaction commit (default: 250)")
 		err = pruneCmd.Parse(args[1:])
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			return fmt.Errorf("error parsing prune flags: %v", err)
 		}
 		pruneOpts := files.PruneOptions{BatchSize: *pruneBatchSize}
 		err = files.PruneNonExistentFiles(ctx, database, pruneOpts)
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			fmt.Printf("Prune error: %v\n", err)
 		}
 		return err
@@ -120,6 +140,9 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 
 		err = findCmd.Parse(args[1:])
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			return fmt.Errorf("error parsing find command flags: %v", err)
 		}
 
@@ -130,11 +153,17 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 			// Default to current host if --server is not provided
 			osHostname, err := os.Hostname()
 			if err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
 				return fmt.Errorf("error getting current OS hostname: %v", err)
 			}
 			// Find the friendly server name from the database based on the OS hostname
 			err = database.QueryRowContext(ctx, `SELECT name FROM hosts WHERE LOWER(hostname) = LOWER($1)`, strings.ToLower(osHostname)).Scan(&serverToUse)
 			if err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
 				if err == sql.ErrNoRows {
 					return fmt.Errorf("no host found in database for OS hostname '%s'. Please add it using 'manage server-add' or specify --server.", osHostname)
 				}
@@ -153,6 +182,9 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 		// Call the actual find function from the files package
 		err = files.FindFiles(ctx, database, findOpts)
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			return fmt.Errorf("error executing find: %v", err)
 		}
 		return nil
@@ -188,6 +220,9 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 		// Get hostname for current machine
 		hostname, err := os.Hostname()
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			fmt.Printf("Error: failed to get hostname: %v\n", err)
 			return err
 		}
@@ -203,6 +238,9 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 			WHERE LOWER(hostname) = LOWER($1)
 		`, hostname).Scan(&hostName)
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			if ctx.Err() != nil {
 				return fmt.Errorf("hashing cancelled: %w", ctx.Err())
 			}
@@ -225,6 +263,9 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 			Paths:            []string(priorityPaths),
 		})
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			if strings.Contains(err.Error(), "no files need hashing") || strings.Contains(err.Error(), "No files need hashing") {
 				fmt.Println("No files need hashing.")
 				return nil
@@ -258,18 +299,24 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 
 		hostname, err := os.Hostname()
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			fmt.Printf("Error: failed to get hostname: %v\n", err)
 			return err
 		}
 		hostname = strings.ToLower(hostname)
 
 		var hostName string
-		err = database.QueryRow(`
+		err = database.QueryRowContext(ctx, `
 				SELECT name
 				FROM hosts
 				WHERE LOWER(hostname) = LOWER($1)
 			`, hostname).Scan(&hostName)
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			if err == sql.ErrNoRows {
 				fmt.Printf("Error: no host found for hostname '%s'. Please add it using 'deduplicator manage add'.\n", hostname)
 				return err
@@ -307,6 +354,9 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 
 		err = cmd.Parse(args[1:])
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			return fmt.Errorf("error parsing command flags: %v", err)
 		}
 
@@ -315,6 +365,9 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 			var err error
 			parsedMinSize, err = files.ParseSize(*minSize)
 			if err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
 				fmt.Printf("Error parsing min-size: %v\n", err)
 				os.Exit(1)
 			}
@@ -364,6 +417,9 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 
 		err = moveDupesCmd.Parse(args[1:])
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			return fmt.Errorf("error parsing command flags: %v", err)
 		}
 
@@ -375,6 +431,9 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 		if *minSize != "" {
 			parsedMinSize, err = files.ParseSize(*minSize)
 			if err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
 				return fmt.Errorf("error parsing min-size: %v", err)
 			}
 		}
@@ -467,6 +526,9 @@ func HandleFiles(ctx context.Context, database *sql.DB, args []string) error {
 
 		opts, err := parseGroupDedupeOptions(args[1], args[2:])
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			return err
 		}
 

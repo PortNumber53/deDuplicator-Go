@@ -14,11 +14,27 @@ import (
 const hashUpgradeBatchSize = 100
 
 // UpgradeStoredHashes recalculates full-file hashes for files with existing stored hashes.
-func UpgradeStoredHashes(ctx context.Context, sqldb *sql.DB, opts HashUpgradeOptions) error {
-	host, err := db.GetHostByHostname(sqldb, opts.Server)
+func UpgradeStoredHashes(ctx context.Context, sqldb *sql.DB, opts HashUpgradeOptions) (resultErr error) {
+	defer cancellationResult(ctx, &resultErr)
+	var activeRows *sql.Rows
+	defer func() {
+		if activeRows != nil {
+			activeRows.Close()
+		}
+	}()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	host, err := db.GetHostByHostnameContext(ctx, sqldb, opts.Server)
 	if err != nil {
-		host, err = db.GetHost(sqldb, opts.Server)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		host, err = db.GetHostContext(ctx, sqldb, opts.Server)
 		if err != nil {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			return fmt.Errorf("server not found: %s", opts.Server)
 		}
 	}
@@ -32,6 +48,9 @@ func UpgradeStoredHashes(ctx context.Context, sqldb *sql.DB, opts HashUpgradeOpt
 
 	var total int64
 	if err := sqldb.QueryRowContext(ctx, "SELECT COUNT(*) FROM files "+whereClause, hostname).Scan(&total); err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return fmt.Errorf("error counting stored hashes: %v", err)
 	}
 	if total == 0 {
@@ -51,6 +70,9 @@ func UpgradeStoredHashes(ctx context.Context, sqldb *sql.DB, opts HashUpgradeOpt
 	lastID := 0
 	var checked, upgraded, unchanged, failed int64
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("operation cancelled after checking %d of %d stored hashes", checked, total)
@@ -59,16 +81,26 @@ func UpgradeStoredHashes(ctx context.Context, sqldb *sql.DB, opts HashUpgradeOpt
 
 		rows, err := sqldb.QueryContext(ctx, query, hostname, lastID)
 		if err != nil {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			return fmt.Errorf("error querying stored hashes: %v", err)
 		}
 
+		activeRows = rows
 		batchCount := 0
 		for rows.Next() {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			var id int
 			var dbPath string
 			var rootFolder sql.NullString
 			var storedHash string
 			if err := rows.Scan(&id, &dbPath, &rootFolder, &storedHash); err != nil {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 				rows.Close()
 				return fmt.Errorf("error scanning stored hash row: %v", err)
 			}
@@ -82,8 +114,11 @@ func UpgradeStoredHashes(ctx context.Context, sqldb *sql.DB, opts HashUpgradeOpt
 				fullPath = filepath.Join(rootFolder.String, dbPath)
 			}
 
-			fullHash, err := calculateFileHash(fullPath)
+			fullHash, err := calculateFileHashContext(ctx, fullPath)
 			if err != nil {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 				failed++
 				logging.ErrorLogger.Printf("Warning: Error recalculating full hash for %s: %v", fullPath, err)
 				continue
@@ -106,8 +141,12 @@ func UpgradeStoredHashes(ctx context.Context, sqldb *sql.DB, opts HashUpgradeOpt
 			upgraded++
 		}
 		rows.Close()
+		activeRows = nil
 
 		if err := rows.Err(); err != nil {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			return fmt.Errorf("error iterating stored hashes: %v", err)
 		}
 		if batchCount < hashUpgradeBatchSize {
@@ -115,6 +154,9 @@ func UpgradeStoredHashes(ctx context.Context, sqldb *sql.DB, opts HashUpgradeOpt
 		}
 	}
 
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	fmt.Printf("Hash upgrade completed: checked %d stored hashes, upgraded %d, unchanged %d, failed %d\n", checked, upgraded, unchanged, failed)
 	return nil
 }

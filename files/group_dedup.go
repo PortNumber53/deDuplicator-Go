@@ -80,10 +80,17 @@ func formatGroupDedupeNet(totals groupDedupeTotals) string {
 }
 
 // DeduplicateByGroup performs group-aware deduplication across multiple hosts
-func DeduplicateByGroup(ctx context.Context, database *sql.DB, opts GroupDedupeOptions) error {
+func DeduplicateByGroup(ctx context.Context, database *sql.DB, opts GroupDedupeOptions) (resultErr error) {
+	defer cancellationResult(ctx, &resultErr)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	// Get path group configuration
-	group, err := db.GetPathGroup(database, opts.GroupName)
+	group, err := db.GetPathGroupContext(ctx, database, opts.GroupName)
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return fmt.Errorf("error getting path group: %v", err)
 	}
 
@@ -94,6 +101,9 @@ func DeduplicateByGroup(ctx context.Context, database *sql.DB, opts GroupDedupeO
 	membersResolved := time.Now()
 	members, err := resolveGroupMirrorMembers(ctx, database, opts.GroupName)
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return err
 	}
 	memberResolutionTime := time.Since(membersResolved)
@@ -123,6 +133,9 @@ func DeduplicateByGroup(ctx context.Context, database *sql.DB, opts GroupDedupeO
 		groupDedupeMode(opts), opts.BalanceMode, formatBytes(opts.MinSize), formatGroupDedupeCountLimit(opts.Count))
 	groupDedupeVerbosef(opts, "Resolved %d member paths in %s", len(members), memberResolutionTime.Round(time.Millisecond))
 	for i, member := range members {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		groupDedupeVerbosef(opts, "Member %d/%d: %s:%s -> %s (priority=%d, indexed files=%d)",
 			i+1, len(members), member.HostName, member.FriendlyPath, member.RootFolder, member.Priority, member.FileCount)
 	}
@@ -132,6 +145,9 @@ func DeduplicateByGroup(ctx context.Context, database *sql.DB, opts GroupDedupeO
 	// loaded and acted on one hash at a time below.
 	candidates, err := findGroupDuplicateCandidates(ctx, database, members, opts)
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return fmt.Errorf("error finding duplicates: %v", err)
 	}
 
@@ -150,10 +166,16 @@ func DeduplicateByGroup(ctx context.Context, database *sql.DB, opts GroupDedupeO
 	processedGroups := 0
 
 	for i, candidate := range candidates {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		groupDedupeVerbosef(opts, "Loading locations for candidate %d/%d: hash=%s size=%s bytes",
 			i+1, len(candidates), candidate.Hash, formatBytes(candidate.Size))
 		locations, err := getFileLocationsForHash(ctx, database, candidate.Hash, candidate.Size, members, opts)
 		if err != nil {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			logging.ErrorLogger.Printf("Error loading locations for hash %s: %v", candidate.Hash, err)
 			failedGroups++
 			continue
@@ -163,6 +185,9 @@ func DeduplicateByGroup(ctx context.Context, database *sql.DB, opts GroupDedupeO
 		if len(locations) <= 1 {
 			if !opts.DryRun {
 				if err := touchGroupHash(ctx, database, candidate.Hash, &candidate.Size, members); err != nil {
+					if err := ctx.Err(); err != nil {
+						return err
+					}
 					logging.ErrorLogger.Printf("Error updating traversal timestamp for hash %s: %v", candidate.Hash, err)
 					failedGroups++
 				}
@@ -174,12 +199,18 @@ func DeduplicateByGroup(ctx context.Context, database *sql.DB, opts GroupDedupeO
 		hashTotals, err := processGroupDuplicates(ctx, database, locations, members, targetCopies, opts)
 		totals.add(hashTotals)
 		if err != nil {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			logging.ErrorLogger.Printf("Error processing hash %s: %v", candidate.Hash, err)
 			failedGroups++
 			continue
 		}
 		if !opts.DryRun {
 			if err := touchGroupHash(ctx, database, candidate.Hash, &candidate.Size, members); err != nil {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 				logging.ErrorLogger.Printf("Error updating traversal timestamp for hash %s: %v", candidate.Hash, err)
 				failedGroups++
 				continue
@@ -187,6 +218,9 @@ func DeduplicateByGroup(ctx context.Context, database *sql.DB, opts GroupDedupeO
 		}
 	}
 
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	if processedGroups == 0 && failedGroups == 0 {
 		fmt.Println("No duplicates found in this group.")
 		return nil
@@ -282,6 +316,9 @@ type groupDuplicateCandidate struct {
 // locations: the caller loads those one hash at a time so each hash is analyzed
 // and acted on before the next one is looked at.
 func findGroupDuplicateCandidates(ctx context.Context, database *sql.DB, members []groupMember, opts GroupDedupeOptions) ([]groupDuplicateCandidate, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	// Build query to find files across all group members
 	query := `
 		WITH group_files AS (
@@ -298,6 +335,9 @@ func findGroupDuplicateCandidates(ctx context.Context, database *sql.DB, members
 
 	// Add conditions for each group member
 	for i, member := range members {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if i > 0 {
 			query += " OR "
 		}
@@ -336,22 +376,34 @@ func findGroupDuplicateCandidates(ctx context.Context, database *sql.DB, members
 	queryStarted := time.Now()
 	rows, err := database.QueryContext(ctx, query, args...)
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		return nil, fmt.Errorf("error querying duplicates: %v", err)
 	}
 	defer rows.Close()
 
 	var duplicates []groupDuplicateCandidate
 	for rows.Next() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		var candidate groupDuplicateCandidate
 		var count int
 		var totalSize int64
 		if err := rows.Scan(&candidate.Hash, &candidate.Size, &count, &totalSize); err != nil {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			return nil, err
 		}
 		duplicates = append(duplicates, candidate)
 	}
 
 	if err := rows.Err(); err != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		return nil, err
 	}
 	groupDedupeVerbosef(opts, "Duplicate candidate query completed in %s: %d candidate groups",
@@ -363,7 +415,11 @@ func findGroupDuplicateCandidates(ctx context.Context, database *sql.DB, members
 // touchGroupHash records a successful traversal of the matching files in this
 // group. A nil size touches every row for the hash; dedupe supplies a size
 // because it treats equal hashes with conflicting sizes as separate candidates.
-func touchGroupHash(ctx context.Context, database *sql.DB, hash string, size *int64, members []groupMember) error {
+func touchGroupHash(ctx context.Context, database *sql.DB, hash string, size *int64, members []groupMember) (resultErr error) {
+	defer cancellationResult(ctx, &resultErr)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	query := `UPDATE files SET updated_at = NOW() WHERE hash = $1`
 	args := []interface{}{hash}
 	argCount := 1
@@ -375,6 +431,9 @@ func touchGroupHash(ctx context.Context, database *sql.DB, hash string, size *in
 
 	query += " AND ("
 	for i, member := range members {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if i > 0 {
 			query += " OR "
 		}
@@ -390,9 +449,15 @@ func touchGroupHash(ctx context.Context, database *sql.DB, hash string, size *in
 
 // getFileLocationsForHash gets all file locations for a specific hash and size within the group.
 func getFileLocationsForHash(ctx context.Context, database *sql.DB, hash string, size int64, members []groupMember, opts GroupDedupeOptions) ([]FileLocation, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	// Map each member's host+root folder back to the member that owns it.
 	memberByScope := make(map[string]groupMember, len(members))
 	for _, member := range members {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		memberByScope[groupDedupeScopeKey(member.Hostname, member.RootFolder)] = member
 	}
 
@@ -408,14 +473,23 @@ func getFileLocationsForHash(ctx context.Context, database *sql.DB, hash string,
 	queryStarted := time.Now()
 	rows, err := database.QueryContext(ctx, query, hash, size)
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		return nil, err
 	}
 	defer rows.Close()
 
 	var locations []FileLocation
 	for rows.Next() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		var loc FileLocation
 		if err := rows.Scan(&loc.Hash, &loc.Path, &loc.Hostname, &loc.RootFolder, &loc.Size); err != nil {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			return nil, err
 		}
 
@@ -429,6 +503,9 @@ func getFileLocationsForHash(ctx context.Context, database *sql.DB, hash string,
 	}
 
 	if err := rows.Err(); err != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		return nil, err
 	}
 	groupDedupeVerbosef(opts, "Location query completed in %s", time.Since(queryStarted).Round(time.Millisecond))
@@ -444,6 +521,9 @@ func groupDedupeScopeKey(hostname, rootFolder string) string {
 // per group host, creates the copies that are missing on other group hosts, and
 // removes everything above that.
 func processGroupDuplicates(ctx context.Context, database *sql.DB, locations []FileLocation, members []groupMember, targetCopies int, opts GroupDedupeOptions) (groupDedupeTotals, error) {
+	if err := ctx.Err(); err != nil {
+		return groupDedupeTotals{}, err
+	}
 	totals := groupDedupeTotals{}
 	if len(locations) == 0 {
 		return totals, nil
@@ -461,11 +541,17 @@ func processGroupDuplicates(ctx context.Context, database *sql.DB, locations []F
 	// Display what we're keeping
 	fmt.Printf("  Keeping %d copies:\n", len(toKeep))
 	for _, loc := range toKeep {
+		if err := ctx.Err(); err != nil {
+			return groupDedupeTotals{}, err
+		}
 		fmt.Printf("  - %s:%s/%s (priority %d)\n", loc.HostName, loc.FriendlyPath, loc.Path, loc.Priority)
 	}
 
 	if !opts.DryRun {
 		if err := verifyGroupKeepers(ctx, toKeep); err != nil {
+			if err := ctx.Err(); err != nil {
+				return groupDedupeTotals{}, err
+			}
 			return totals, err
 		}
 	}
@@ -477,22 +563,34 @@ func processGroupDuplicates(ctx context.Context, database *sql.DB, locations []F
 		if opts.DryRun {
 			fmt.Printf("  Would create %d missing copies:\n", len(plan.Replicate))
 			for _, task := range plan.Replicate {
+				if err := ctx.Err(); err != nil {
+					return groupDedupeTotals{}, err
+				}
 				fmt.Printf("  - %s:%s/%s -> %s:%s/%s\n",
 					task.Source.HostName, task.Source.FriendlyPath, task.Source.Path,
 					task.DstMember.HostName, task.DstMember.FriendlyPath, task.RelPath)
 			}
 			totals.Copied = len(plan.Replicate)
 			for _, task := range plan.Replicate {
+				if err := ctx.Err(); err != nil {
+					return groupDedupeTotals{}, err
+				}
 				totals.CopiedBytes += task.Source.Size
 			}
 		} else {
 			fmt.Printf("  Creating %d missing copies:\n", len(plan.Replicate))
 			for _, task := range plan.Replicate {
+				if err := ctx.Err(); err != nil {
+					return groupDedupeTotals{}, err
+				}
 				fmt.Printf("  - %s:%s/%s -> %s:%s/%s\n",
 					task.Source.HostName, task.Source.FriendlyPath, task.Source.Path,
 					task.DstMember.HostName, task.DstMember.FriendlyPath, task.RelPath)
 				created, err := replicateGroupCopy(ctx, database, task)
 				if err != nil {
+					if err := ctx.Err(); err != nil {
+						return groupDedupeTotals{}, err
+					}
 					return totals, fmt.Errorf("keeping all copies because %s:%s/%s could not be created: %v",
 						task.DstMember.HostName, task.DstMember.FriendlyPath, task.RelPath, err)
 				}
@@ -500,6 +598,9 @@ func processGroupDuplicates(ctx context.Context, database *sql.DB, locations []F
 				totals.CopiedBytes += created.Size
 				toKeep = append(toKeep, created)
 				if err := verifyGroupKeepers(ctx, []FileLocation{created}); err != nil {
+					if err := ctx.Err(); err != nil {
+						return groupDedupeTotals{}, err
+					}
 					return totals, err
 				}
 			}
@@ -517,28 +618,40 @@ func processGroupDuplicates(ctx context.Context, database *sql.DB, locations []F
 		}
 
 		for _, loc := range toRemove {
+			if err := ctx.Err(); err != nil {
+				return groupDedupeTotals{}, err
+			}
 			fmt.Printf("  - %s:%s/%s (priority %d)\n", loc.HostName, loc.FriendlyPath, loc.Path, loc.Priority)
 
 			if !opts.DryRun {
 				if err := removeGroupFile(ctx, loc); err != nil {
+					if err := ctx.Err(); err != nil {
+						return groupDedupeTotals{}, err
+					}
 					logging.ErrorLogger.Printf("Warning: Failed to delete %s:%s/%s: %v", loc.HostName, loc.FriendlyPath, loc.Path, err)
 					failed++
 					continue
 				}
 
 				// Remove from database
-				result, err := database.Exec(`
+				result, err := database.ExecContext(ctx, `
 					DELETE FROM files
 					WHERE path = $1 AND LOWER(hostname) = LOWER($2)
 					AND root_folder = $3 AND hash = $4 AND size = $5
 				`, loc.Path, loc.Hostname, loc.RootFolder, loc.Hash, loc.Size)
 				if err != nil {
+					if err := ctx.Err(); err != nil {
+						return groupDedupeTotals{}, err
+					}
 					logging.ErrorLogger.Printf("Warning: Failed to delete file from database: %v", err)
 					failed++
 					continue
 				}
 				rows, err := result.RowsAffected()
 				if err != nil || rows != 1 {
+					if err := ctx.Err(); err != nil {
+						return groupDedupeTotals{}, err
+					}
 					logging.ErrorLogger.Printf("Warning: Removed file but expected one matching database row, got rows=%d error=%v", rows, err)
 					failed++
 					continue
@@ -726,14 +839,23 @@ func chooseGroupDedupeSource(ordered []FileLocation, selected []bool, members []
 // replicateGroupCopy creates one missing copy on a group host and indexes it,
 // reusing the mirror-group transfer path.
 func replicateGroupCopy(ctx context.Context, database *sql.DB, task groupDedupeReplication) (FileLocation, error) {
+	if err := ctx.Err(); err != nil {
+		return FileLocation{}, err
+	}
 	localHost, err := os.Hostname()
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return FileLocation{}, err
+		}
 		return FileLocation{}, err
 	}
 	localHost = strings.ToLower(localHost)
 
 	relPath, err := cleanGroupMirrorRelPath(task.RelPath)
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return FileLocation{}, err
+		}
 		return FileLocation{}, err
 	}
 
@@ -747,6 +869,9 @@ func replicateGroupCopy(ctx context.Context, database *sql.DB, task groupDedupeR
 
 	conflictRoot, conflictHash, conflicts, err := groupMirrorIndexedPathConflict(ctx, database, mirrorTask)
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return FileLocation{}, err
+		}
 		return FileLocation{}, err
 	}
 	if conflicts {
@@ -756,6 +881,9 @@ func replicateGroupCopy(ctx context.Context, database *sql.DB, task groupDedupeR
 	dstAbs := filepath.Join(task.DstMember.RootFolder, relPath)
 	exists, err := groupMirrorFileExists(ctx, localHost, task.DstMember, dstAbs)
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return FileLocation{}, err
+		}
 		return FileLocation{}, err
 	}
 	if exists {
@@ -763,12 +891,21 @@ func replicateGroupCopy(ctx context.Context, database *sql.DB, task groupDedupeR
 	}
 
 	if err := ensureGroupMirrorParentDir(ctx, localHost, task.DstMember, dstAbs); err != nil {
+		if err := ctx.Err(); err != nil {
+			return FileLocation{}, err
+		}
 		return FileLocation{}, err
 	}
 	if err := copyGroupMirrorFile(ctx, localHost, mirrorTask); err != nil {
+		if err := ctx.Err(); err != nil {
+			return FileLocation{}, err
+		}
 		return FileLocation{}, err
 	}
 	if err := recordGroupMirrorCopy(ctx, database, mirrorTask); err != nil {
+		if err := ctx.Err(); err != nil {
+			return FileLocation{}, err
+		}
 		return FileLocation{}, err
 	}
 
@@ -787,10 +924,20 @@ func replicateGroupCopy(ctx context.Context, database *sql.DB, task groupDedupeR
 
 // verifyGroupKeepers refuses to continue unless every copy that must survive is
 // still on disk with its recorded size.
-func verifyGroupKeepers(ctx context.Context, keepers []FileLocation) error {
+func verifyGroupKeepers(ctx context.Context, keepers []FileLocation) (resultErr error) {
+	defer cancellationResult(ctx, &resultErr)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	for _, loc := range keepers {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		matches, err := groupFileMatchesRecordedSize(ctx, loc)
 		if err != nil {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			return fmt.Errorf("could not verify keeper %s:%s/%s: %v", loc.HostName, loc.FriendlyPath, loc.Path, err)
 		}
 		if !matches {
@@ -801,9 +948,15 @@ func verifyGroupKeepers(ctx context.Context, keepers []FileLocation) error {
 }
 
 func groupFileMatchesRecordedSize(ctx context.Context, loc FileLocation) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	fullPath := filepath.Join(loc.RootFolder, loc.Path)
 	localHost, err := os.Hostname()
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
 		return false, err
 	}
 	if strings.EqualFold(localHost, loc.Hostname) {
@@ -831,21 +984,37 @@ func groupFileMatchesRecordedSize(ctx context.Context, loc FileLocation) (bool, 
 	return false, fmt.Errorf("remote file check failed: %v", err)
 }
 
-func removeGroupFile(ctx context.Context, loc FileLocation) error {
+func removeGroupFile(ctx context.Context, loc FileLocation) (resultErr error) {
+	defer cancellationResult(ctx, &resultErr)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	fullPath := filepath.Join(loc.RootFolder, loc.Path)
 	localHost, err := os.Hostname()
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return err
 	}
 	if strings.EqualFold(localHost, loc.Hostname) {
 		info, err := os.Stat(fullPath)
 		if err != nil {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			return err
 		}
 		if !info.Mode().IsRegular() || info.Size() != loc.Size {
 			return fmt.Errorf("file is missing or its size changed")
 		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := os.Remove(fullPath); err != nil {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			return err
 		}
 		return nil
@@ -856,6 +1025,9 @@ func removeGroupFile(ctx context.Context, loc FileLocation) error {
 	cmd := exec.CommandContext(ctx, "ssh", loc.Hostname, command)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return fmt.Errorf("remote remove failed: %v %s", err, strings.TrimSpace(string(output)))
 	}
 	return nil
